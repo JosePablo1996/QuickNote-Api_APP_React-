@@ -1,18 +1,16 @@
 services:
+  # Servicio web para la API FastAPI
   - type: web
     name: quicknote-api
     runtime: python
-    plan: free
-    region: oregon  # o la región más cercana a ti
+    repo: https://github.com/JosePablo1996/QuickNote-Api_APP_React-
+    branch: master  # Importante: usa 'master' si esa es tu rama principal
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
     envVars:
       - key: SUPABASE_URL
-        sync: false  # Se configurará manualmente en Render
+        sync: false  # La configuraremos manualmente
       - key: SUPABASE_KEY
-        sync: false  # Se configurará manualmente en Render
+        sync: false  # La configuraremos manualmente
       - key: ENVIRONMENT
         value: production
-      - key: PYTHON_VERSION
-        value: 3.11.0

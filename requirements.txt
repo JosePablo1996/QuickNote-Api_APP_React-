@@ -2,23 +2,15 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Supabase y dependencias - VERSIONES COMPATIBLES CON PYTHON 3.14
-supabase==2.3.0
-httpx==0.24.1
-gotrue==2.9.1
-postgrest==0.13.2
-storage3==0.7.7
-realtime==2.28.0
-supafunc==0.9.4
+# Cliente HTTP (para tu cliente manual de Supabase)
+httpx==0.28.1
 
-# Pydantic - VERSIONES COMPATIBLES CON PYTHON 3.14
+# Pydantic - Modelos de datos
 pydantic==2.12.0
 pydantic-settings==2.8.0
 
-# Configuración
-python-dotenv==1.0.0
-
 # Utilidades
+python-dotenv==1.0.0
 python-multipart==0.0.6
 python-dateutil==2.8.2
 email-validator==2.0.0

@@ -1,0 +1,7 @@
+﻿{
+    "title": "Nota desde curl con archivo",
+    "content": "Probando en producción",
+    "color": "#4CAF50",
+    "is_favorite": false,
+    "is_archived": false
+}

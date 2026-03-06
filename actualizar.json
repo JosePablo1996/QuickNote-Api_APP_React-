@@ -1,0 +1,5 @@
+﻿{
+    "title": "Título actualizado desde PowerShell",
+    "content": "¡La actualización también funciona!",
+    "is_favorite": true
+}

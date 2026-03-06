@@ -1,0 +1,7 @@
+﻿{
+    "title": "Mi nota",
+    "content": "Contenido",
+    "color": "#4CAF50",
+    "is_favorite": false,
+    "is_archived": false
+}

@@ -1,6 +1,7 @@
+# models/note.py - Versión corregida
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 class NoteBase(BaseModel):
@@ -9,6 +10,7 @@ class NoteBase(BaseModel):
     color: str = "#FFFFFF"
     is_favorite: bool = False
     is_archived: bool = False
+    tags: List[str] = Field(default_factory=list)  # ✅ NUEVO: campo tags
 
 class NoteCreate(NoteBase):
     user_id: Optional[UUID] = None
@@ -19,6 +21,7 @@ class NoteUpdate(BaseModel):
     color: Optional[str] = None
     is_favorite: Optional[bool] = None
     is_archived: Optional[bool] = None
+    tags: Optional[List[str]] = None  # ✅ NUEVO: permitir actualizar tags
 
 class NoteInDB(NoteBase):
     id: UUID

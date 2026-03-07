@@ -1,6 +1,7 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime  # IMPORTANTE: esto faltaba
+from datetime import datetime
 
 from app.routes import notes_router
 from app.config import settings
@@ -13,9 +14,10 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# ✅ CONFIGURACIÓN DE CORS ACTUALIZADA
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=settings.cors_origins,  # ✅ Usando la nueva propiedad
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

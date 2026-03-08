@@ -14,10 +14,10 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ✅ CONFIGURACIÓN DE CORS ACTUALIZADA
+# ✅ CORREGIDO: Usar el nuevo método get_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,  # ✅ Usando la nueva propiedad
+    allow_origins=settings.get_allowed_origins(),  # ✅ Ahora es un método, no una propiedad
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,7 +42,6 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Endpoint para verificar que la API está funcionando correctamente"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),

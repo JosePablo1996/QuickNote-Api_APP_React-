@@ -1,3 +1,4 @@
+# config.py - VERSIÓN CORREGIDA
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 import os
@@ -17,16 +18,35 @@ class Settings(BaseSettings):
     # Environment
     environment: str = os.getenv("ENVIRONMENT", "development")
     
-    # CORS
-    allowed_origins: list = [
+    # CORS - Definir como campos normales
+    allowed_origins_dev: list = [
         "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000",
+    ]
+    
+    allowed_origins_prod: list = [
         "https://quicknote-app.vercel.app",
+        "https://quicknote-web-app.vercel.app",
+        "https://quicknote-web-app.netlify.app",
     ]
     
     class Config:
         env_file = ".env"
         case_sensitive = False
+
+    # ✅ NUEVO: Método para obtener orígenes según entorno
+    def get_allowed_origins(self):
+        """Retorna orígenes permitidos según el entorno"""
+        if self.environment == "development":
+            return self.allowed_origins_dev
+        else:
+            return self.allowed_origins_prod
 
 settings = Settings()
 

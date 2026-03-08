@@ -1,6 +1,5 @@
 # main.py
-from fastapi import FastAPI, Response  # ✅ Añadir Response
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
@@ -15,33 +14,25 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ✅ CONFIGURACIÓN CORS COMPLETA
+# ✅ USAR el método get_allowed_origins() de settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://quicknote-web-app.vercel.app",
-        "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    ],
+    allow_origins=settings.get_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # ✅ Incluir OPTIONS
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=600,  # Cache preflight requests for 10 minutes
+    max_age=600,
 )
 
-# ✅ MIDDLEWARE PARA ASEGURAR CORS EN TODAS LAS RESPUESTAS
+# ✅ MIDDLEWARE PARA CORS
 @app.middleware("http")
 async def add_cors_headers(request, call_next):
     response = await call_next(request)
-    
-    # Añadir cabeceras CORS manualmente como respaldo
     origin = request.headers.get("origin")
-    if origin in [
-        "http://localhost:5173",
-        "https://quicknote-web-app.vercel.app",
-        "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    ]:
+    
+    # Usar la misma lista de orígenes
+    if origin in settings.get_allowed_origins():
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
@@ -49,8 +40,20 @@ async def add_cors_headers(request, call_next):
     
     return response
 
-# ✅ RUTA ESPECÍFICA PARA MANEJAR OPTIONS EN /notes/
-@app.options("/api/v1/notes/")
+# ✅ RUTA PARA NOTES CON PARÁMETRO deleted=true
+@app.get("/api/v1/notes")
+async def get_notes(deleted: bool = False):
+    """
+    Obtener notas, con opción de filtrar por eliminadas
+    - deleted=false (default): solo notas activas
+    - deleted=true: solo notas eliminadas
+    """
+    # Aquí iría la lógica para obtener notas de la base de datos
+    # Por ahora es un placeholder
+    return {"message": "Endpoint de notas - implementar después"}
+
+# ✅ RUTA ESPECÍFICA PARA OPTIONS
+@app.options("/api/v1/notes")
 async def options_notes():
     return Response(
         status_code=200,
@@ -62,9 +65,8 @@ async def options_notes():
         }
     )
 
-# ✅ RUTA ESPECÍFICA PARA MANEJAR OPTIONS EN /notes (sin slash)
-@app.options("/api/v1/notes")
-async def options_notes_no_slash():
+@app.options("/api/v1/notes/")
+async def options_notes_slash():
     return Response(
         status_code=200,
         headers={
@@ -83,13 +85,8 @@ async def root():
         "message": "📝 Welcome to QuickNote API",
         "version": settings.version,
         "environment": settings.environment,
-        "documentation": {
-            "swagger": "/docs",
-            "redoc": "/redoc"
-        },
-        "endpoints": {
-            "notes": "/api/v1/notes"
-        }
+        "documentation": { "swagger": "/docs", "redoc": "/redoc" },
+        "endpoints": { "notes": "/api/v1/notes" }
     }
 
 @app.get("/health")
@@ -105,12 +102,12 @@ async def api_root():
     return {
         "message": "QuickNote API v1",
         "available_endpoints": {
-            "GET /notes": "Listar todas las notas (usar /api/v1/notes/)",
+            "GET /notes?deleted=true": "Obtener notas eliminadas",
+            "GET /notes/": "Obtener todas las notas",
             "GET /notes/{id}": "Obtener una nota específica",
             "POST /notes": "Crear una nueva nota",
             "PUT /notes/{id}": "Actualizar una nota existente",
             "DELETE /notes/{id}": "Eliminar una nota",
-            "POST /notes/sync": "Sincronizar múltiples notas"
         }
     }
 

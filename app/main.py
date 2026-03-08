@@ -1,4 +1,5 @@
 # main.py
+from fastapi import FastAPI, Response  # ✅ Añadir Response
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -14,14 +15,65 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ✅ CORREGIDO: Usar el nuevo método get_allowed_origins()
+# ✅ CONFIGURACIÓN CORS COMPLETA
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.get_allowed_origins(),  # ✅ Ahora es un método, no una propiedad
+    allow_origins=[
+        "http://localhost:5173",
+        "https://quicknote-web-app.vercel.app",
+        "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # ✅ Incluir OPTIONS
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
+
+# ✅ MIDDLEWARE PARA ASEGURAR CORS EN TODAS LAS RESPUESTAS
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    response = await call_next(request)
+    
+    # Añadir cabeceras CORS manualmente como respaldo
+    origin = request.headers.get("origin")
+    if origin in [
+        "http://localhost:5173",
+        "https://quicknote-web-app.vercel.app",
+        "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
+    ]:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    
+    return response
+
+# ✅ RUTA ESPECÍFICA PARA MANEJAR OPTIONS EN /notes/
+@app.options("/api/v1/notes/")
+async def options_notes():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+# ✅ RUTA ESPECÍFICA PARA MANEJAR OPTIONS EN /notes (sin slash)
+@app.options("/api/v1/notes")
+async def options_notes_no_slash():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
 
 app.include_router(notes_router, prefix="/api/v1")
 

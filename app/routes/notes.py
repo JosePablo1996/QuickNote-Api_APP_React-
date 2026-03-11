@@ -48,18 +48,17 @@ async def get_notes(
         token = auth["token"]
         print(f"📥 GET /notes - Usuario: {user_id}, deleted: {deleted}")
         
-        # Crear cliente con el token del usuario
+        # ✅ Usar cliente con token
         user_client = supabase_client.with_token(token)
         
         query = user_client.table("notes")\
             .select("*")\
             .eq("user_id", str(user_id))
         
-        # ✅ CORREGIDO: Usar los nuevos métodos is_null/is_not_null
         if deleted:
-            query = query.is_not_null("deleted_at")  # notas eliminadas
+            query = query.is_not_null("deleted_at")
         else:
-            query = query.is_null("deleted_at")      # notas activas
+            query = query.is_null("deleted_at")
         
         result = query.order("updated_at", desc=True).execute()
         
@@ -84,7 +83,7 @@ async def get_note(
         token = auth["token"]
         print(f"🔍 GET /notes/{note_id} - Usuario: {user_id}")
         
-        # Crear cliente con el token del usuario
+        # ✅ Usar cliente con token
         user_client = supabase_client.with_token(token)
         
         result = user_client.table("notes")\
@@ -115,7 +114,7 @@ async def create_note(
         token = auth["token"]
         print(f"📝 POST /notes - Usuario: {user_id}")
         
-        # Crear cliente con el token del usuario
+        # ✅ Usar cliente con token
         user_client = supabase_client.with_token(token)
         
         # Preparar datos de la nota
@@ -152,7 +151,7 @@ async def update_note(
         token = auth["token"]
         print(f"✏️ PUT /notes/{note_id} - Usuario: {user_id}")
         
-        # Crear cliente con el token del usuario
+        # ✅ Usar cliente con token
         user_client = supabase_client.with_token(token)
         
         # Verificar que la nota existe y pertenece al usuario
@@ -165,15 +164,19 @@ async def update_note(
         if not existing:
             raise HTTPException(status_code=404, detail="Nota no encontrada")
         
-        # Actualizar
+        # Preparar datos de actualización
         update_data = note.model_dump(exclude_unset=True)
         update_data["updated_at"] = datetime.now().isoformat()
         
+        # Actualizar
         result = user_client.table("notes")\
+            .update(update_data)\
             .eq("id", str(note_id))\
             .eq("user_id", str(user_id))\
-            .update(update_data)\
             .execute()
+        
+        if not result:
+            raise HTTPException(status_code=500, detail="Error al actualizar nota")
         
         print(f"✅ Nota actualizada: {note_id}")
         return result[0]
@@ -195,7 +198,7 @@ async def delete_note(
         token = auth["token"]
         print(f"🗑️ DELETE /notes/{note_id} - Usuario: {user_id}")
         
-        # Crear cliente con el token del usuario
+        # ✅ Usar cliente con token
         user_client = supabase_client.with_token(token)
         
         # Verificar que la nota existe y pertenece al usuario
@@ -210,12 +213,13 @@ async def delete_note(
         
         # Eliminar
         user_client.table("notes")\
+            .delete()\
             .eq("id", str(note_id))\
             .eq("user_id", str(user_id))\
-            .delete()\
             .execute()
         
         print(f"✅ Nota eliminada: {note_id}")
+        return None
         
     except HTTPException:
         raise
@@ -234,7 +238,7 @@ async def sync_notes(
         token = auth["token"]
         print(f"🔄 POST /notes/sync - Usuario: {user_id}, {len(notes)} notas")
         
-        # Crear cliente con el token del usuario
+        # ✅ Usar cliente con token
         user_client = supabase_client.with_token(token)
         
         synced_notes = []
@@ -245,7 +249,7 @@ async def sync_notes(
             note_data["created_at"] = datetime.now().isoformat()
             
             result = user_client.table("notes")\
-                .upsert(note_data, on_conflict="id")\
+                .upsert(note_data)\
                 .execute()
             
             if result:

@@ -1,9 +1,33 @@
-# main.py - VERSIÓN CORREGIDA
+# main.py - VERSIÓN CORREGIDA CON LOGGING
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
+import logging
+import sys
 
-from app.routes import notes_router
+# 🔧 CONFIGURACIÓN DE LOGGING - IMPORTANTE PARA VER LOS LOGS EN RENDER
+logging.basicConfig(
+    level=logging.INFO,  # Cambiar a DEBUG para más detalles
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Forzar salida a stdout
+        logging.StreamHandler(sys.stderr),  # También a stderr por si acaso
+    ]
+)
+
+# Configurar loggers específicos
+logging.getLogger("app.services.supabase_client").setLevel(logging.INFO)
+logging.getLogger("app.routes.notes").setLevel(logging.INFO)
+logging.getLogger("app.config").setLevel(logging.INFO)
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+
+logger = logging.getLogger(__name__)
+logger.info("=" * 60)
+logger.info("🚀 Iniciando aplicación QuickNote API")
+logger.info("=" * 60)
+
+from app.routes import notes
 from app.config import settings
 
 app = FastAPI(
@@ -14,23 +38,16 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ✅ CONFIGURACIÓN CORS - VERSIÓN MÁS PERMISIVA PARA DIAGNÓSTICO
+# ✅ CONFIGURACIÓN CORS
+logger.info("🔧 Configurando CORS...")
+logger.info(f"📋 Orígenes permitidos: {settings.get_allowed_origins()}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:3000",
-        "https://quicknote-web-app.vercel.app",
-        "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    ],
+    allow_origins=settings.get_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],  # ✅ Permitir TODOS los métodos
-    allow_headers=["*"],  # ✅ Permitir TODOS los headers
+    allow_methods=["*"],
+    allow_headers=["*"],
     expose_headers=["*"],
     max_age=600,
 )
@@ -38,31 +55,24 @@ app.add_middleware(
 # ✅ MIDDLEWARE DE RESPALDO - SIEMPRE AÑADIR CABECERAS
 @app.middleware("http")
 async def add_cors_headers(request, call_next):
+    logger.debug(f"📥 Request: {request.method} {request.url.path}")
     response = await call_next(request)
     origin = request.headers.get("origin")
     
     # Siempre añadir cabeceras para orígenes conocidos
-    if origin and origin in [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:3000",
-        "https://quicknote-web-app.vercel.app",
-        "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    ]:
+    if origin and origin in settings.get_allowed_origins():
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "*"
+        logger.debug(f"✅ CORS headers añadidos para origen: {origin}")
     
     return response
 
 # ✅ RUTAS OPTIONS MANUALES - POR SI ACASO
 @app.options("/{path:path}")
-async def options_handler():
+async def options_handler(path: str):
+    logger.debug(f"📋 OPTIONS request para: {path}")
     return Response(
         status_code=200,
         headers={
@@ -74,17 +84,21 @@ async def options_handler():
         }
     )
 
-# Incluir rutas
-app.include_router(notes_router, prefix="/api/v1")
+# Incluir rutas - ✅ IMPORTANTE: usar el router correcto
+logger.info("🔄 Incluyendo rutas...")
+app.include_router(notes.router, prefix="/api/v1")
+logger.info("✅ Rutas incluidas correctamente")
 
 # Endpoint de prueba para verificar CORS
-@app.get("/api/v1/notes")
-async def get_notes(deleted: bool = False):
+@app.get("/api/v1/notes-test")
+async def get_notes_test(deleted: bool = False):
     """Endpoint temporal para pruebas"""
+    logger.info(f"🔍 Test endpoint llamado con deleted={deleted}")
     return {"message": "API funcionando", "deleted": deleted, "notes": []}
 
 @app.get("/")
 async def root():
+    logger.info("📢 Endpoint root llamado")
     return {
         "message": "📝 Welcome to QuickNote API",
         "version": settings.version,
@@ -94,13 +108,27 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    logger.debug("🏥 Health check")
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
     }
 
+@app.on_event("startup")
+async def startup_event():
+    logger.info("✅ Aplicación iniciada correctamente")
+    logger.info(f"🌐 Entorno: {settings.environment}")
+    logger.info(f"🔗 Supabase URL: {settings.supabase_url}")
+    logger.info(f"🔑 JWT Secret configurado: {settings.jwt_secret[:20]}...")
+    logger.info(f"📋 CORS Origins: {len(settings.get_allowed_origins())} orígenes")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("👋 Aplicación deteniéndose")
+
 if __name__ == "__main__":
     import uvicorn
+    logger.info("🚀 Iniciando servidor uvicorn...")
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",

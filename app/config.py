@@ -2,8 +2,11 @@
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 import os
+import logging
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     # Supabase
@@ -32,6 +35,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "https://quicknote-web-app.vercel.app",
         "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
+        "https://quicknote-api-app-react.onrender.com",  # ✅ Añadido el dominio de Render
     ]
     
     class Config:
@@ -47,10 +51,11 @@ settings = Settings()
 if not settings.supabase_url or not settings.supabase_key:
     raise ValueError("SUPABASE_URL y SUPABASE_KEY deben estar configuradas en el archivo .env")
 
-# Log de configuración (solo en desarrollo)
-if settings.environment == "development":
-    print(f"🔧 Configuración cargada:")
-    print(f"  - Entorno: {settings.environment}")
-    print(f"  - Supabase URL: {settings.supabase_url[:20]}...")
-    print(f"  - JWT Secret: {settings.jwt_secret[:20]}... (configurado)")
-    print(f"  - CORS Origins: {len(settings.allowed_origins)} orígenes")
+# Log de configuración usando logging en lugar de print
+logger.info("=" * 50)
+logger.info("🔧 Configuración cargada:")
+logger.info(f"  - Entorno: {settings.environment}")
+logger.info(f"  - Supabase URL: {settings.supabase_url[:30]}...")
+logger.info(f"  - JWT Secret: {settings.jwt_secret[:30]}... (configurado)")
+logger.info(f"  - CORS Origins: {len(settings.allowed_origins)} orígenes")
+logger.info("=" * 50)

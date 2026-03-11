@@ -1,26 +1,18 @@
-# main.py - VERSIÓN CORREGIDA CON LOGGING
+# main.py - VERSIÓN MEJORADA
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import logging
 import sys
 
-# 🔧 CONFIGURACIÓN DE LOGGING - IMPORTANTE PARA VER LOS LOGS EN RENDER
+# 🔧 CONFIGURACIÓN DE LOGGING
 logging.basicConfig(
-    level=logging.INFO,  # Cambiar a DEBUG para más detalles
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),  # Forzar salida a stdout
-        logging.StreamHandler(sys.stderr),  # También a stderr por si acaso
+        logging.StreamHandler(sys.stdout),
     ]
 )
-
-# Configurar loggers específicos
-logging.getLogger("app.services.supabase_client").setLevel(logging.INFO)
-logging.getLogger("app.routes.notes").setLevel(logging.INFO)
-logging.getLogger("app.config").setLevel(logging.INFO)
-logging.getLogger("uvicorn").setLevel(logging.INFO)
-logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 logger.info("=" * 60)
@@ -38,7 +30,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ✅ CONFIGURACIÓN CORS
+# ✅ CONFIGURACIÓN CORS MEJORADA
 logger.info("🔧 Configurando CORS...")
 logger.info(f"📋 Orígenes permitidos: {settings.get_allowed_origins()}")
 
@@ -47,54 +39,40 @@ app.add_middleware(
     allow_origins=settings.get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
     expose_headers=["*"],
     max_age=600,
 )
 
-# ✅ MIDDLEWARE DE RESPALDO - SIEMPRE AÑADIR CABECERAS
+# ✅ MIDDLEWARE PARA DEPURACIÓN DE TOKENS
 @app.middleware("http")
-async def add_cors_headers(request, call_next):
-    logger.debug(f"📥 Request: {request.method} {request.url.path}")
-    response = await call_next(request)
-    origin = request.headers.get("origin")
+async def log_requests(request, call_next):
+    # Log de la petición entrante
+    logger.info(f"📥 {request.method} {request.url.path}")
     
-    # Siempre añadir cabeceras para orígenes conocidos
-    if origin and origin in settings.get_allowed_origins():
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        logger.debug(f"✅ CORS headers añadidos para origen: {origin}")
+    # Log de headers importantes
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        logger.info(f"🔑 Authorization header presente: {auth_header[:30]}...")
+    else:
+        logger.warning("⚠️ No Authorization header found")
+    
+    origin = request.headers.get("origin")
+    if origin:
+        logger.info(f"🌐 Origin: {origin}")
+    
+    # Procesar la petición
+    response = await call_next(request)
+    
+    # Log de la respuesta
+    logger.info(f"📤 Response status: {response.status_code}")
     
     return response
 
-# ✅ RUTAS OPTIONS MANUALES - POR SI ACASO
-@app.options("/{path:path}")
-async def options_handler(path: str):
-    logger.debug(f"📋 OPTIONS request para: {path}")
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Max-Age": "600",
-        }
-    )
-
-# Incluir rutas - ✅ IMPORTANTE: usar el router correcto
+# Incluir rutas
 logger.info("🔄 Incluyendo rutas...")
 app.include_router(notes.router, prefix="/api/v1")
 logger.info("✅ Rutas incluidas correctamente")
-
-# Endpoint de prueba para verificar CORS
-@app.get("/api/v1/notes-test")
-async def get_notes_test(deleted: bool = False):
-    """Endpoint temporal para pruebas"""
-    logger.info(f"🔍 Test endpoint llamado con deleted={deleted}")
-    return {"message": "API funcionando", "deleted": deleted, "notes": []}
 
 @app.get("/")
 async def root():
@@ -103,32 +81,31 @@ async def root():
         "message": "📝 Welcome to QuickNote API",
         "version": settings.version,
         "environment": settings.environment,
+        "jwt_configured": bool(settings.jwt_secret),
         "cors_origins": settings.get_allowed_origins(),
     }
 
 @app.get("/health")
 async def health_check():
-    logger.debug("🏥 Health check")
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+        "jwt_configured": bool(settings.jwt_secret),
     }
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("✅ Aplicación iniciada correctamente")
+    logger.info("=" * 60)
+    logger.info("✅ APLICACIÓN INICIADA CORRECTAMENTE")
     logger.info(f"🌐 Entorno: {settings.environment}")
     logger.info(f"🔗 Supabase URL: {settings.supabase_url}")
-    logger.info(f"🔑 JWT Secret configurado: {settings.jwt_secret[:20]}...")
+    logger.info(f"🔑 JWT Secret configurado: {'✅ SI' if settings.jwt_secret else '❌ NO'}")
+    logger.info(f"🔑 JWT Secret (primeros 20): {settings.jwt_secret[:20]}...")
     logger.info(f"📋 CORS Origins: {len(settings.get_allowed_origins())} orígenes")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("👋 Aplicación deteniéndose")
+    logger.info("=" * 60)
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("🚀 Iniciando servidor uvicorn...")
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",

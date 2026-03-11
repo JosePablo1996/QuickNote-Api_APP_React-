@@ -19,8 +19,10 @@ class SupabaseClient:
     def with_token(self, token: str):
         """Crear una nueva instancia con un token de usuario"""
         headers = self.base_headers.copy()
+        # ✅ ESTO ES LO CRÍTICO - AÑADIR EL TOKEN DEL USUARIO
         headers["Authorization"] = f"Bearer {token}"
         headers["Prefer"] = "return=representation"
+        logger.info(f"🔑 Cliente con token creado - Token: {token[:20]}...")
         return SupabaseClientWithToken(self, headers, token)
 
 class SupabaseClientWithToken:
@@ -42,60 +44,78 @@ class TableQueryWithToken:
         self.params: Dict[str, str] = {}
     
     def select(self, columns: str = "*"):
-        """Seleccionar columnas"""
         self.params["select"] = columns
         return self
     
     def eq(self, column: str, value: Any):
-        """Filtro de igualdad"""
         self.params[f"{column}"] = f"eq.{value}"
         return self
     
-    def order(self, column: str, desc: bool = False):
-        """Ordenar resultados"""
-        direction = "desc" if desc else "asc"
-        self.params["order"] = f"{column}.{direction}"
+    def not_.is_(self, column: str, value: Any):
+        """Filtro IS NOT (para null)"""
+        self.params[f"{column}"] = f"not.is.{value}"
         return self
     
-    def limit(self, limit: int):
-        """Limitar resultados"""
-        self.params["limit"] = str(limit)
+    def is_(self, column: str, value: Any):
+        """Filtro IS (para null)"""
+        self.params[f"{column}"] = f"is.{value}"
+        return self
+    
+    def order(self, column: str, desc: bool = False):
+        direction = "desc" if desc else "asc"
+        self.params["order"] = f"{column}.{direction}"
         return self
     
     def execute(self) -> List[Dict[str, Any]]:
         """Ejecutar la consulta SELECT"""
         try:
+            logger.info(f"📤 Ejecutando SELECT en {self.table_name}")
+            logger.info(f"📦 Headers: {list(self.client.headers.keys())}")
+            
             response = self.client.client.get(
                 self.base_url,
                 headers=self.client.headers,
                 params=self.params
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(f"✅ SELECT completado: {len(result)} registros")
+            return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"Error en consulta: {e.response.text}")
+            logger.error(f"❌ Error en consulta: {e.response.status_code}")
+            logger.error(f"📄 Respuesta: {e.response.text}")
             raise
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"❌ Error: {e}")
             raise
     
     def insert(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Insertar un registro"""
         try:
+            logger.info(f"📤 Insertando en {self.table_name}")
+            logger.info(f"📦 Headers: {list(self.client.headers.keys())}")
+            
             response = self.client.client.post(
                 self.base_url,
                 headers=self.client.headers,
                 json=data
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(f"✅ Insert completado")
+            return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"Error al insertar: {e.response.text}")
+            logger.error(f"❌ Error al insertar: {e.response.status_code}")
+            logger.error(f"📄 Respuesta: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
             raise
     
     def update(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Actualizar registros"""
         try:
+            logger.info(f"📤 Actualizando en {self.table_name}")
             response = self.client.client.patch(
                 self.base_url,
                 headers=self.client.headers,
@@ -103,24 +123,36 @@ class TableQueryWithToken:
                 json=data
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(f"✅ Update completado")
+            return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"Error al actualizar: {e.response.text}")
+            logger.error(f"❌ Error al actualizar: {e.response.status_code}")
+            logger.error(f"📄 Respuesta: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
             raise
     
     def delete(self) -> List[Dict[str, Any]]:
         """Eliminar registros"""
         try:
+            logger.info(f"📤 Eliminando de {self.table_name}")
             response = self.client.client.delete(
                 self.base_url,
                 headers=self.client.headers,
                 params=self.params
             )
             response.raise_for_status()
-            # DELETE puede devolver 204 sin contenido
-            return response.json() if response.content else []
+            result = response.json() if response.content else []
+            logger.info(f"✅ Delete completado")
+            return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"Error al eliminar: {e.response.text}")
+            logger.error(f"❌ Error al eliminar: {e.response.status_code}")
+            logger.error(f"📄 Respuesta: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
             raise
     
     def upsert(self, data: Dict[str, Any], on_conflict: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -133,6 +165,7 @@ class TableQueryWithToken:
             params["on_conflict"] = on_conflict
         
         try:
+            logger.info(f"📤 Upsert en {self.table_name}")
             response = self.client.client.post(
                 self.base_url,
                 headers=headers,
@@ -140,9 +173,15 @@ class TableQueryWithToken:
                 json=data if isinstance(data, list) else [data]
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(f"✅ Upsert completado")
+            return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"Error al upsert: {e.response.text}")
+            logger.error(f"❌ Error al upsert: {e.response.status_code}")
+            logger.error(f"📄 Respuesta: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
             raise
 
 # Instancia global (sin token)

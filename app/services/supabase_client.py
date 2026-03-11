@@ -9,24 +9,36 @@ class SupabaseClient:
     def __init__(self):
         self.url = settings.supabase_url
         self.key = settings.supabase_key
-        self.headers = {
+        self.base_headers = {
             "apikey": self.key,
-            "Authorization": f"Bearer {self.key}",
             "Content-Type": "application/json",
-            "Prefer": "return=representation"
         }
         self.client = httpx.Client(timeout=30.0)
         logger.info("✅ Cliente Supabase manual inicializado")
     
-    def table(self, table_name: str):
-        """Obtener un manejador para una tabla"""
-        return TableQuery(self, table_name)
+    def with_token(self, token: str):
+        """Crear una nueva instancia con un token de usuario"""
+        headers = self.base_headers.copy()
+        headers["Authorization"] = f"Bearer {token}"
+        headers["Prefer"] = "return=representation"
+        return SupabaseClientWithToken(self, headers, token)
 
-class TableQuery:
-    def __init__(self, client: SupabaseClient, table_name: str):
+class SupabaseClientWithToken:
+    def __init__(self, parent: SupabaseClient, headers: Dict, token: str):
+        self.parent = parent
+        self.headers = headers
+        self.token = token
+        self.client = parent.client
+    
+    def table(self, table_name: str):
+        """Obtener un manejador para una tabla con el token del usuario"""
+        return TableQueryWithToken(self, table_name)
+
+class TableQueryWithToken:
+    def __init__(self, client: SupabaseClientWithToken, table_name: str):
         self.client = client
         self.table_name = table_name
-        self.base_url = f"{client.url}/rest/v1/{table_name}"
+        self.base_url = f"{client.parent.url}/rest/v1/{table_name}"
         self.params: Dict[str, str] = {}
     
     def select(self, columns: str = "*"):
@@ -133,5 +145,5 @@ class TableQuery:
             logger.error(f"Error al upsert: {e.response.text}")
             raise
 
-# Instancia global
+# Instancia global (sin token)
 supabase_client = SupabaseClient()

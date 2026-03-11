@@ -6,15 +6,22 @@ import os
 load_dotenv()
 
 class Settings(BaseSettings):
+    # Supabase
     supabase_url: str = os.getenv("SUPABASE_URL", "")
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
     
+    # JWT - NUEVO
+    jwt_secret: str = os.getenv("JWT_SECRET", "quicknote-super-secret-jwt-key-change-in-production")
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60 * 24 * 7  # 7 días
+    
+    # API Info
     project_name: str = "QuickNote API"
     version: str = "1.0.0"
     description: str = "API para QuickNote - App de notas moderna"
     environment: str = os.getenv("ENVIRONMENT", "development")
     
-    # ✅ ORÍGENES EXPLÍCITOS - MISMA LISTA QUE EN MAIN.PY
+    # CORS - ORÍGENES EXPLÍCITOS
     allowed_origins: list = [
         "http://localhost:5173",
         "http://localhost:5174",
@@ -36,5 +43,14 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# Validaciones
 if not settings.supabase_url or not settings.supabase_key:
     raise ValueError("SUPABASE_URL y SUPABASE_KEY deben estar configuradas en el archivo .env")
+
+# Log de configuración (solo en desarrollo)
+if settings.environment == "development":
+    print(f"🔧 Configuración cargada:")
+    print(f"  - Entorno: {settings.environment}")
+    print(f"  - Supabase URL: {settings.supabase_url[:20]}...")
+    print(f"  - JWT Secret: {settings.jwt_secret[:15]}...")
+    print(f"  - CORS Origins: {len(settings.allowed_origins)} orígenes")

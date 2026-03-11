@@ -19,7 +19,6 @@ class SupabaseClient:
     def with_token(self, token: str):
         """Crear una nueva instancia con un token de usuario"""
         headers = self.base_headers.copy()
-        # ✅ ESTO ES LO CRÍTICO - AÑADIR EL TOKEN DEL USUARIO
         headers["Authorization"] = f"Bearer {token}"
         headers["Prefer"] = "return=representation"
         logger.info(f"🔑 Cliente con token creado - Token: {token[:20]}...")
@@ -44,24 +43,32 @@ class TableQueryWithToken:
         self.params: Dict[str, str] = {}
     
     def select(self, columns: str = "*"):
+        """Seleccionar columnas"""
         self.params["select"] = columns
         return self
     
     def eq(self, column: str, value: Any):
+        """Filtro de igualdad"""
         self.params[f"{column}"] = f"eq.{value}"
         return self
     
-    def not_.is_(self, column: str, value: Any):
-        """Filtro IS NOT (para null)"""
-        self.params[f"{column}"] = f"not.is.{value}"
+    def not_eq(self, column: str, value: Any):
+        """Filtro de no igualdad"""
+        self.params[f"{column}"] = f"neq.{value}"
         return self
     
-    def is_(self, column: str, value: Any):
-        """Filtro IS (para null)"""
-        self.params[f"{column}"] = f"is.{value}"
+    def is_null(self, column: str):
+        """Filtro IS NULL"""
+        self.params[f"{column}"] = "is.null"
+        return self
+    
+    def is_not_null(self, column: str):
+        """Filtro IS NOT NULL"""
+        self.params[f"{column}"] = "not.is.null"
         return self
     
     def order(self, column: str, desc: bool = False):
+        """Ordenar resultados"""
         direction = "desc" if desc else "asc"
         self.params["order"] = f"{column}.{direction}"
         return self

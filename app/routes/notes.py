@@ -5,7 +5,7 @@ from datetime import datetime
 import jwt
 
 from app.models.note import NoteCreate, NoteUpdate, NoteInDB
-from app.services.supabase_client import supabase_client  # ✅ Importar el cliente base (sin token)
+from app.services.supabase_client import supabase_client
 from app.config import settings
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -48,17 +48,18 @@ async def get_notes(
         token = auth["token"]
         print(f"📥 GET /notes - Usuario: {user_id}, deleted: {deleted}")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         user_client = supabase_client.with_token(token)
         
         query = user_client.table("notes")\
             .select("*")\
             .eq("user_id", str(user_id))
         
+        # ✅ CORREGIDO: Usar los nuevos métodos is_null/is_not_null
         if deleted:
-            query = query.not_.is_("deleted_at", "null")
+            query = query.is_not_null("deleted_at")  # notas eliminadas
         else:
-            query = query.is_("deleted_at", "null")
+            query = query.is_null("deleted_at")      # notas activas
         
         result = query.order("updated_at", desc=True).execute()
         
@@ -83,7 +84,7 @@ async def get_note(
         token = auth["token"]
         print(f"🔍 GET /notes/{note_id} - Usuario: {user_id}")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         user_client = supabase_client.with_token(token)
         
         result = user_client.table("notes")\
@@ -114,7 +115,7 @@ async def create_note(
         token = auth["token"]
         print(f"📝 POST /notes - Usuario: {user_id}")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         user_client = supabase_client.with_token(token)
         
         # Preparar datos de la nota
@@ -151,7 +152,7 @@ async def update_note(
         token = auth["token"]
         print(f"✏️ PUT /notes/{note_id} - Usuario: {user_id}")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         user_client = supabase_client.with_token(token)
         
         # Verificar que la nota existe y pertenece al usuario
@@ -194,7 +195,7 @@ async def delete_note(
         token = auth["token"]
         print(f"🗑️ DELETE /notes/{note_id} - Usuario: {user_id}")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         user_client = supabase_client.with_token(token)
         
         # Verificar que la nota existe y pertenece al usuario
@@ -233,7 +234,7 @@ async def sync_notes(
         token = auth["token"]
         print(f"🔄 POST /notes/sync - Usuario: {user_id}, {len(notes)} notas")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         user_client = supabase_client.with_token(token)
         
         synced_notes = []

@@ -2,10 +2,10 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Cliente HTTP (para tu cliente manual de Supabase)
+# Cliente HTTP
 httpx==0.28.1
 
-# Pydantic - Modelos de datos
+# Pydantic
 pydantic==2.12.0
 pydantic-settings==2.8.0
 
@@ -15,15 +15,8 @@ python-multipart==0.0.6
 python-dateutil==2.8.2
 email-validator==2.0.0
 
-# ✅ JWT - Para autenticación (NUEVO)
+# ✅ JWT - ¡ESTO ES LO QUE FALTA!
 PyJWT==2.8.0
 
-# ✅ Cliente oficial de Supabase (opcional, si decides usarlo)
-# supabase==2.5.0
-
-# ✅ Dependencias de PyJWT
-cryptography==42.0.5  # Para algoritmos más seguros
-
-# ✅ Utilidades adicionales
-typing-extensions==4.9.0
-pytz==2024.1  # Para manejo de zonas horarias
+# ✅ Dependencias de seguridad
+cryptography==42.0.5

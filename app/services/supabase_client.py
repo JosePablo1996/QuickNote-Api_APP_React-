@@ -2,6 +2,8 @@ import httpx
 from app.config import settings
 from typing import Optional, Dict, Any, List
 import logging
+import jwt
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -9,19 +11,63 @@ class SupabaseClient:
     def __init__(self):
         self.url = settings.supabase_url
         self.key = settings.supabase_key
+        self.jwt_secret = settings.jwt_secret
         self.base_headers = {
             "apikey": self.key,
             "Content-Type": "application/json",
         }
         self.client = httpx.Client(timeout=30.0)
         logger.info("✅ Cliente Supabase manual inicializado")
+        logger.info(f"🔑 JWT Secret configurado: {self.jwt_secret[:20]}...")
     
     def with_token(self, token: str):
-        """Crear una nueva instancia con un token de usuario"""
+        """Crear una nueva instancia con un token de usuario validado"""
+        
+        # ✅ VALIDACIÓN DEL TOKEN JWT
+        try:
+            # Decodificar y verificar el token
+            payload = jwt.decode(
+                token, 
+                self.jwt_secret, 
+                algorithms=[settings.jwt_algorithm],
+                options={"verify_signature": True, "verify_exp": True}
+            )
+            
+            # Verificar que el token contiene userId
+            user_id = payload.get("userId")
+            if not user_id:
+                logger.error("❌ Token no contiene userId")
+                raise ValueError("Token inválido: no contiene userId")
+            
+            # Verificar expiración (jwt.decode ya lo hace, pero verificamos manualmente)
+            exp = payload.get("exp")
+            if exp:
+                exp_time = datetime.fromtimestamp(exp)
+                now = datetime.now()
+                if exp_time < now:
+                    logger.error(f"❌ Token expirado desde: {exp_time}")
+                    raise ValueError("Token expirado")
+            
+            logger.info(f"✅ Token válido para usuario: {user_id}")
+            logger.info(f"📧 Email: {payload.get('email', 'No email')}")
+            logger.info(f"🔑 Expira: {datetime.fromtimestamp(exp) if exp else 'No expira'}")
+            
+        except jwt.ExpiredSignatureError:
+            logger.error("❌ Token expirado")
+            raise ValueError("Token expirado")
+        except jwt.InvalidTokenError as e:
+            logger.error(f"❌ Token inválido: {e}")
+            raise ValueError(f"Token inválido: {e}")
+        except Exception as e:
+            logger.error(f"❌ Error validando token: {e}")
+            raise
+        
+        # Crear headers con el token
         headers = self.base_headers.copy()
         headers["Authorization"] = f"Bearer {token}"
         headers["Prefer"] = "return=representation"
-        logger.info(f"🔑 Cliente con token creado - Token: {token[:20]}...")
+        
+        logger.info(f"🔑 Cliente con token creado - Headers: {list(headers.keys())}")
         return SupabaseClientWithToken(self, headers, token)
 
 class SupabaseClientWithToken:
@@ -78,6 +124,7 @@ class TableQueryWithToken:
         try:
             logger.info(f"📤 Ejecutando SELECT en {self.table_name}")
             logger.info(f"📦 Headers: {list(self.client.headers.keys())}")
+            logger.info(f"🔍 Params: {self.params}")
             
             response = self.client.client.get(
                 self.base_url,
@@ -101,6 +148,7 @@ class TableQueryWithToken:
         try:
             logger.info(f"📤 Insertando en {self.table_name}")
             logger.info(f"📦 Headers: {list(self.client.headers.keys())}")
+            logger.info(f"📝 Data: {data}")
             
             response = self.client.client.post(
                 self.base_url,
@@ -109,7 +157,7 @@ class TableQueryWithToken:
             )
             response.raise_for_status()
             result = response.json()
-            logger.info(f"✅ Insert completado")
+            logger.info(f"✅ Insert completado: {result}")
             return result
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ Error al insertar: {e.response.status_code}")
@@ -123,6 +171,7 @@ class TableQueryWithToken:
         """Actualizar registros"""
         try:
             logger.info(f"📤 Actualizando en {self.table_name}")
+            logger.info(f"🔍 Params: {self.params}")
             response = self.client.client.patch(
                 self.base_url,
                 headers=self.client.headers,
@@ -145,6 +194,7 @@ class TableQueryWithToken:
         """Eliminar registros"""
         try:
             logger.info(f"📤 Eliminando de {self.table_name}")
+            logger.info(f"🔍 Params: {self.params}")
             response = self.client.client.delete(
                 self.base_url,
                 headers=self.client.headers,
@@ -173,6 +223,7 @@ class TableQueryWithToken:
         
         try:
             logger.info(f"📤 Upsert en {self.table_name}")
+            logger.info(f"🔍 Params: {params}")
             response = self.client.client.post(
                 self.base_url,
                 headers=headers,

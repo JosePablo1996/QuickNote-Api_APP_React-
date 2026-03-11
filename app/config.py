@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     supabase_url: str = os.getenv("SUPABASE_URL", "")
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
     
-    # JWT - NUEVO
-    jwt_secret: str = os.getenv("JWT_SECRET", "quicknote-super-secret-jwt-key-change-in-production")
+    # ✅ JWT - AHORA CON EL SECRETO CORRECTO DE SUPABASE
+    jwt_secret: str = os.getenv("JWT_SECRET", "bpt3Y5ayZtaZSydhOFg7400mY0gzOxhH0gP0wdPjGmns/iqu0D5n0BGM4Kjzd+OIGgCXBi4RAyp+4usk4fwyXQ==")
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 días
     
@@ -52,5 +52,5 @@ if settings.environment == "development":
     print(f"🔧 Configuración cargada:")
     print(f"  - Entorno: {settings.environment}")
     print(f"  - Supabase URL: {settings.supabase_url[:20]}...")
-    print(f"  - JWT Secret: {settings.jwt_secret[:15]}...")
+    print(f"  - JWT Secret: {settings.jwt_secret[:20]}... (configurado)")
     print(f"  - CORS Origins: {len(settings.allowed_origins)} orígenes")

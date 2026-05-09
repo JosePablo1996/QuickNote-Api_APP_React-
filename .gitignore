@@ -21,6 +21,14 @@ venv/
 # Environment variables
 .env
 .env.local
+Variables_De_Entorno_QuickNote_Api.txt
+Variables_De_Entorno_Fronted_QuickNote.txt
+
+# JSON de prueba
+actualizar.json
+nota.json
+payload.json
+simple.json
 
 # Testing
 .pytest_cache/

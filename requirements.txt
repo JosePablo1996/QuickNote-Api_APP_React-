@@ -19,7 +19,7 @@ email-validator==2.0.0
 PyJWT==2.8.0
 
 # ✅ Seguridad
-cryptography==42.0.5
+cryptography==45.0.7
 
 # ✅ NUEVO: Passkeys/WebAuthn
-webauthn==2.1.0
+webauthn==2.5.0

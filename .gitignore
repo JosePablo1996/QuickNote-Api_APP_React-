@@ -25,14 +25,15 @@ build/
 *.db
 *.sqlite3
 
-# Environment variables
+# Environment variables - Todos los formatos posibles
 .env
+.env.*
+*.env
+Variables_De_Entorno_*.txt
+KEYS_PUBLIC.txt
 .env.local
 .env.production
 .env.development
-Variables_De_Entorno_QuickNote_Api.txt
-Variables_De_Entorno_Fronted_QuickNote.txt
-KEYS_PUBLIC.txt
 
 # JSON de prueba
 actualizar.json
@@ -45,7 +46,6 @@ simple.json
 .coverage
 htmlcov/
 .tox/
-.pytest_cache/
 
 # OS
 .DS_Store

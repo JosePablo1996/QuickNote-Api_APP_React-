@@ -1,6 +1,7 @@
 # app/services/passkey_service.py
 import json
 import base64
+import binascii
 from typing import Dict, Any, Optional, Tuple
 from webauthn import (
     generate_registration_options,
@@ -63,7 +64,6 @@ class PasskeyService:
         """Verifica el registro de una passkey"""
         
         try:
-            # Pasar el dict directamente sin construir objetos
             expected_challenge_bytes = base64url_to_bytes(challenge)
             
             verification = verify_registration_response(
@@ -74,17 +74,33 @@ class PasskeyService:
                 require_user_verification=True,
             )
             
+            # ✅ CORREGIDO: credential_public_key ya está en formato COSE/CBOR bytes
+            # NO codificarlo de nuevo, guardarlo TAL CUAL como base64url
+            public_key_bytes = verification.credential_public_key
+            
+            logger.info(f"📊 Public key raw bytes length: {len(public_key_bytes)}")
+            logger.info(f"📊 Public key hex (first 50): {public_key_bytes[:50].hex()}")
+            
+            # Guardar como base64url (sin padding) para mantener compatibilidad
+            public_key_base64url = base64.urlsafe_b64encode(public_key_bytes).decode('utf-8').rstrip('=')
+            
+            # Guardar credential_id como base64url también
+            credential_id_base64url = base64.urlsafe_b64encode(verification.credential_id).decode('utf-8').rstrip('=')
+            
             credential_data = {
-                "credential_id": base64.b64encode(verification.credential_id).decode('utf-8'),
-                "public_key": "stored_separately",
+                "credential_id": credential_id_base64url,
+                "public_key": public_key_base64url,
                 "sign_count": verification.sign_count,
             }
             
-            logger.info("Registro verificado correctamente")
+            logger.info("✅ Registro verificado correctamente")
+            logger.info(f"📊 Public key base64url length: {len(public_key_base64url)} chars")
+            logger.info(f"📊 Credential ID: {credential_id_base64url[:30]}...")
+            
             return True, credential_data
             
         except Exception as e:
-            logger.error(f"Error verificando registro: {str(e)}")
+            logger.error(f"❌ Error verificando registro: {str(e)}")
             logger.exception("Stacktrace completo:")
             return False, None
     
@@ -116,22 +132,56 @@ class PasskeyService:
         try:
             expected_challenge_bytes = base64url_to_bytes(challenge)
             
+            # ✅ CORREGIDO: La clave pública está guardada en base64url
+            public_key_str = stored_credential.get("public_key", "")
+            
+            if not public_key_str:
+                logger.error("❌ Public key vacía en stored_credential")
+                return False, None
+            
+            logger.info(f"📊 Stored public key (first 50 chars): {public_key_str[:50]}...")
+            logger.info(f"📊 Stored public key length: {len(public_key_str)} chars")
+            
+            # Decodificar de base64url a bytes
+            try:
+                # Agregar padding si es necesario
+                padding = 4 - len(public_key_str) % 4
+                if padding != 4:
+                    public_key_str_padded = public_key_str + ('=' * padding)
+                else:
+                    public_key_str_padded = public_key_str
+                
+                credential_public_key = base64.urlsafe_b64decode(public_key_str_padded)
+                logger.info(f"✅ Public key decodificada: {len(credential_public_key)} bytes")
+                logger.info(f"📊 Public key hex (first 50): {credential_public_key[:50].hex()}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error decodificando public key: {str(e)}")
+                return False, None
+            
+            # Obtener el contador actual
+            sign_count = stored_credential.get("sign_count", 0)
+            logger.info(f"📊 Sign count actual: {sign_count}")
+            
+            # Verificar la autenticación
             verification = verify_authentication_response(
                 credential=credential,
                 expected_challenge=expected_challenge_bytes,
                 expected_rp_id=self.rp_id,
                 expected_origin=self.origin,
-                credential_public_key=base64url_to_bytes(stored_credential.get("public_key", "")),
-                credential_current_sign_count=stored_credential.get("sign_count", 0),
+                credential_public_key=credential_public_key,
+                credential_current_sign_count=sign_count,
                 require_user_verification=True,
             )
             
-            logger.info(f"Login verificado, nuevo contador: {verification.new_sign_count}")
+            logger.info(f"✅ Login verificado, nuevo contador: {verification.new_sign_count}")
             return True, verification.new_sign_count
             
         except Exception as e:
-            logger.error(f"Error verificando login: {str(e)}")
+            logger.error(f"❌ Error verificando login: {str(e)}")
+            logger.exception("Stacktrace completo:")
             return False, None
+
 
 # Instancia global
 passkey_service = PasskeyService()

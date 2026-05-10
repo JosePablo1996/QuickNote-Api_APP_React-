@@ -3,7 +3,9 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 import jwt
+from jwt import PyJWKClient, InvalidTokenError
 import logging
+import httpx
 
 from app.models.note import NoteCreate, NoteUpdate, NoteInDB
 from app.services.supabase_client import supabase_client
@@ -16,10 +18,73 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 
 # Constantes
 JWT_SECRET = settings.jwt_secret if hasattr(settings, 'jwt_secret') else "quicknote-super-secret-jwt-key-change-in-production"
+SUPABASE_URL = settings.supabase_url if hasattr(settings, 'supabase_url') else ""
+SUPABASE_JWKS_URL = f"{SUPABASE_URL}/auth/v1/jwks" if SUPABASE_URL else ""
 
-# Función para obtener el token del header
+# Cache del cliente JWKS
+_jwks_client = None
+
+def get_jwks_client():
+    """Obtener cliente JWKS para verificar tokens de Supabase (ES256)"""
+    global _jwks_client
+    if _jwks_client is None and SUPABASE_JWKS_URL:
+        _jwks_client = PyJWKClient(SUPABASE_JWKS_URL)
+    return _jwks_client
+
+def decode_token_hs256(token: str) -> dict:
+    """
+    Decodifica token JWT con algoritmo HS256.
+    Usado para tokens generados por passkey/login tradicional.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=["HS256"],
+            options={
+                "verify_exp": True,
+                "verify_aud": False
+            }
+        )
+        logger.info("✅ Token HS256 decodificado correctamente")
+        return payload
+    except InvalidTokenError as e:
+        logger.warning(f"⚠️ Token no es HS256: {str(e)}")
+        raise
+
+def decode_token_es256(token: str) -> dict:
+    """
+    Decodifica token JWT con algoritmo ES256.
+    Usado para tokens generados por Supabase Auth.
+    """
+    try:
+        jwks_client = get_jwks_client()
+        if not jwks_client:
+            raise ValueError("JWKS client no disponible (SUPABASE_URL no configurada)")
+        
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256"],
+            audience="authenticated",
+            options={
+                "verify_exp": True,
+                "verify_aud": False
+            }
+        )
+        logger.info("✅ Token ES256 (Supabase) decodificado correctamente")
+        return payload
+    except Exception as e:
+        logger.warning(f"⚠️ Token no es ES256: {str(e)}")
+        raise
+
 async def get_token(authorization: Optional[str] = Header(None)):
-    """Extrae y valida el token JWT del header Authorization"""
+    """
+    Extrae y valida el token JWT del header Authorization.
+    Soporta tanto HS256 (passkey/login) como ES256 (Supabase).
+    """
     if not authorization:
         logger.error("❌ Token no proporcionado en header")
         raise HTTPException(status_code=401, detail="Token no proporcionado")
@@ -34,37 +99,58 @@ async def get_token(authorization: Optional[str] = Header(None)):
     logger.info(f"🔑 Token extraído: {token[:50]}...")
     logger.info(f"🔑 Longitud del token: {len(token)} caracteres")
     
+    # Determinar tipo de token por el encabezado
     try:
-        # Decodificar el token para obtener el user_id
-        logger.info("🔄 Decodificando JWT...")
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        user_id = payload.get("userId") or payload.get("sub")
-        email = payload.get("email")
-        
-        logger.info(f"✅ Token decodificado correctamente")
-        logger.info(f"👤 User ID: {user_id}")
-        logger.info(f"📧 Email: {email}")
-        logger.info(f"📦 Payload completo: {payload}")
-        
-        if not user_id:
-            logger.error("❌ El payload no contiene userId ni sub")
-            raise HTTPException(status_code=401, detail="Token no contiene user_id")
-        
-        return {
-            "token": token,
-            "user_id": user_id,
-            "email": email,
-            "payload": payload
-        }
-    except jwt.ExpiredSignatureError:
-        logger.error("❌ Token expirado")
-        raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError as e:
-        logger.error(f"❌ Token inválido: {str(e)}")
-        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+        header = jwt.get_unverified_header(token)
+        alg = header.get("alg", "desconocido")
+        logger.info(f"🔐 Algoritmo del token: {alg}")
+    except Exception:
+        alg = "desconocido"
+    
+    # Intentar decodificar con ambos algoritmos
+    payload = None
+    error_msg = ""
+    
+    # Primero intentar con HS256
+    try:
+        payload = decode_token_hs256(token)
     except Exception as e:
-        logger.error(f"❌ Error inesperado decodificando token: {str(e)}")
-        raise HTTPException(status_code=401, detail=f"Error procesando token: {str(e)}")
+        error_msg += f"HS256: {str(e)}. "
+    
+    # Si falló HS256, intentar con ES256
+    if payload is None:
+        try:
+            payload = decode_token_es256(token)
+        except Exception as e:
+            error_msg += f"ES256: {str(e)}"
+    
+    if payload is None:
+        logger.error(f"❌ Token inválido ({alg}): {error_msg}")
+        raise HTTPException(status_code=401, detail=f"Token inválido: {error_msg}")
+    
+    # Extraer user_id del payload (soporta ambos formatos)
+    user_id = (
+        payload.get("userId") or 
+        payload.get("sub") or 
+        payload.get("user_id")
+    )
+    email = payload.get("email") or payload.get("user_metadata", {}).get("email")
+    
+    logger.info(f"✅ Token decodificado correctamente")
+    logger.info(f"👤 User ID: {user_id}")
+    logger.info(f"📧 Email: {email}")
+    
+    if not user_id:
+        logger.error("❌ El payload no contiene userId, sub ni user_id")
+        logger.info(f"📦 Payload recibido: {payload}")
+        raise HTTPException(status_code=401, detail="Token no contiene user_id")
+    
+    return {
+        "token": token,
+        "user_id": user_id,
+        "email": email,
+        "payload": payload
+    }
 
 @router.get("/", response_model=List[NoteInDB])
 async def get_notes(
@@ -81,7 +167,7 @@ async def get_notes(
         logger.info(f"🔍 Filtro deleted: {deleted}")
         logger.info(f"🔑 Token (primeros 50): {token[:50]}...")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
         logger.info("✅ Cliente con token creado exitosamente")
@@ -102,7 +188,9 @@ async def get_notes(
         query = query.order("updated_at", desc=True)
         logger.info("📤 Ejecutando query en Supabase...")
         
+        # ✅ CORREGIDO: select necesita .execute()
         result = query.execute()
+        
         logger.info(f"✅ Query ejecutada exitosamente")
         logger.info(f"📊 Notas encontradas: {len(result) if result else 0}")
         logger.info("=" * 50)
@@ -130,12 +218,13 @@ async def get_note(
         logger.info(f"👤 Usuario: {user_id}")
         logger.info(f"🔑 Token: {token[:50]}...")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
         logger.info("✅ Cliente con token creado")
         
         logger.info(f"🔍 Buscando nota con ID: {note_id}")
+        # ✅ CORREGIDO: select necesita .execute()
         result = user_client.table("notes")\
             .select("*")\
             .eq("id", str(note_id))\
@@ -171,7 +260,7 @@ async def create_note(
         logger.info(f"👤 Usuario: {user_id}")
         logger.info(f"🔑 Token: {token[:50]}...")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
         logger.info("✅ Cliente con token creado")
@@ -192,7 +281,8 @@ async def create_note(
         logger.info(f"  - User ID: {note_data.get('user_id')}")
         
         logger.info("📤 Insertando en Supabase...")
-        result = user_client.table("notes").insert(note_data).execute()
+        # ✅ CORREGIDO: insert() ya ejecuta automáticamente (sin .execute())
+        result = user_client.table("notes").insert(note_data)
         
         if not result:
             logger.error("❌ Supabase no devolvió resultados después de insertar")
@@ -225,13 +315,14 @@ async def update_note(
         logger.info(f"👤 Usuario: {user_id}")
         logger.info(f"🔑 Token: {token[:50]}...")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
         logger.info("✅ Cliente con token creado")
         
         # Verificar que la nota existe y pertenece al usuario
         logger.info(f"🔍 Verificando existencia de nota {note_id}")
+        # ✅ CORREGIDO: select necesita .execute()
         existing = user_client.table("notes")\
             .select("id")\
             .eq("id", str(note_id))\
@@ -252,6 +343,7 @@ async def update_note(
         
         # Actualizar
         logger.info("📤 Enviando actualización a Supabase...")
+        # ✅ CORREGIDO: update() necesita filtros + .execute()
         result = user_client.table("notes")\
             .update(update_data)\
             .eq("id", str(note_id))\
@@ -287,13 +379,14 @@ async def delete_note(
         logger.info(f"👤 Usuario: {user_id}")
         logger.info(f"🔑 Token: {token[:50]}...")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
         logger.info("✅ Cliente con token creado")
         
         # Verificar que la nota existe y pertenece al usuario
         logger.info(f"🔍 Verificando existencia de nota {note_id}")
+        # ✅ CORREGIDO: select necesita .execute()
         existing = user_client.table("notes")\
             .select("id")\
             .eq("id", str(note_id))\
@@ -308,6 +401,7 @@ async def delete_note(
         
         # Eliminar
         logger.info("📤 Enviando solicitud de eliminación a Supabase...")
+        # ✅ CORREGIDO: delete() necesita filtros + .execute()
         user_client.table("notes")\
             .delete()\
             .eq("id", str(note_id))\
@@ -340,7 +434,7 @@ async def sync_notes(
         logger.info(f"📊 Notas a sincronizar: {len(notes)}")
         logger.info(f"🔑 Token: {token[:50]}...")
         
-        # ✅ Crear cliente con el token del usuario
+        # Crear cliente con el token del usuario
         logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
         logger.info("✅ Cliente con token creado")
@@ -355,9 +449,8 @@ async def sync_notes(
             
             logger.info(f"  - Título: {note_data.get('title')}")
             
-            result = user_client.table("notes")\
-                .upsert(note_data)\
-                .execute()
+            # ✅ CORREGIDO: upsert() ya ejecuta automáticamente (sin .execute())
+            result = user_client.table("notes").upsert(note_data)
             
             if result:
                 synced_notes.extend(result)

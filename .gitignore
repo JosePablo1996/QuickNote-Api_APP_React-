@@ -9,10 +9,17 @@ env/
 venv/
 .env
 .venv
+*.egg-info/
+dist/
+build/
+*.egg
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # Project specific
 *.db
@@ -21,8 +28,11 @@ venv/
 # Environment variables
 .env
 .env.local
+.env.production
+.env.development
 Variables_De_Entorno_QuickNote_Api.txt
 Variables_De_Entorno_Fronted_QuickNote.txt
+KEYS_PUBLIC.txt
 
 # JSON de prueba
 actualizar.json
@@ -35,6 +45,20 @@ simple.json
 .coverage
 htmlcov/
 .tox/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Backup files
+*.bak
+*.backup
+*.tmp
 
 # Distribution
 dist/

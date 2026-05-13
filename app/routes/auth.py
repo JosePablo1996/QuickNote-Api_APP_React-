@@ -37,16 +37,16 @@ class VerifyOtpRequest(BaseModel):
     email: EmailStr
     code: str
 
-# ✅ NUEVO: Modelo para login
+# Modelo para login
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-# ✅ CORREGIDO: Modelo para respuesta de login CON temp_token
+# Modelo para respuesta de login CON temp_token
 class LoginResponse(BaseModel):
     success: bool = True
     requires_2fa: bool = False
-    temp_token: Optional[str] = None  # ✅ AGREGADO: user_id para verificación 2FA
+    temp_token: Optional[str] = None
     message: Optional[str] = None
     user_id: Optional[str] = None
     access_token: Optional[str] = None
@@ -81,6 +81,8 @@ async def get_current_user(
     Soporta:
     - Tokens HS256 (generados por nuestro backend)
     - Tokens ES256 (generados por Supabase Auth)
+    
+    ✅ CORREGIDO: Ahora devuelve el token original para usar en clientes Supabase
     """
     try:
         token = credentials.credentials if credentials else None
@@ -94,6 +96,9 @@ async def get_current_user(
                 status_code=401,
                 detail="Token de autenticación no proporcionado"
             )
+        
+        # Guardar el token original para usarlo en las consultas a Supabase
+        original_token = token
         
         token_header = jwt.get_unverified_header(token)
         token_alg = token_header.get("alg", "unknown")
@@ -119,11 +124,13 @@ async def get_current_user(
                 detail="Token no contiene información de usuario"
             )
         
+        # ✅ CRÍTICO: Devolver el token ORIGINAL para usarlo en Supabase
         return {
             "user_id": user_id,
             "sub": user_id,
             "email": user_email,
-            "payload": payload
+            "payload": payload,
+            "token": original_token  # ✅ Token original para autenticación en Supabase
         }
         
     except HTTPException:
@@ -147,13 +154,13 @@ async def login(credentials: LoginRequest):
     Soporta autenticación normal y 2FA.
     
     Flujo:
-    1. Si el usuario NO tiene 2FA → Retorna access_token directamente
-    2. Si el usuario TIENE 2FA → Retorna temp_token (user_id) para verificar después
+    1. Si el usuario NO tiene 2FA -> Retorna access_token directamente
+    2. Si el usuario TIENE 2FA -> Retorna temp_token (user_id) para verificar después
     """
     logger.info(f"📝 Intentando login para: {credentials.email}")
     
     try:
-        # ✅ PASO 1: Autenticar con Supabase Auth usando REST API
+        # PASO 1: Autenticar con Supabase Auth usando REST API
         async with httpx.AsyncClient() as client:
             auth_response = await client.post(
                 f"{settings.supabase_url}/auth/v1/token?grant_type=password",
@@ -211,7 +218,7 @@ async def login(credentials: LoginRequest):
                     detail="No se pudo obtener información del usuario"
                 )
             
-            # ✅ Obtener metadata del usuario
+            # Obtener metadata del usuario
             user_metadata = user.get("user_metadata", {}) or {}
             
             logger.info(f"✅ Usuario autenticado: {credentials.email} (ID: {user_id})")
@@ -225,7 +232,7 @@ async def login(credentials: LoginRequest):
                     detail="Por favor verifica tu email antes de iniciar sesión. Revisa tu bandeja de entrada."
                 )
             
-            # ✅ PASO 2: Verificar si el usuario tiene 2FA activado
+            # PASO 2: Verificar si el usuario tiene 2FA activado
             requires_2fa = False
             
             try:
@@ -233,17 +240,16 @@ async def login(credentials: LoginRequest):
                 logger.info(f"🔍 2FA status para {credentials.email}: {'✅ Activado' if requires_2fa else '❌ Desactivado'}")
             except Exception as e:
                 logger.warning(f"⚠️ Error verificando 2FA: {e}")
-                # Si hay error, asumir que no tiene 2FA para no bloquear el login
                 requires_2fa = False
             
-            # ✅ PASO 3: Si requiere 2FA, devolver temp_token (user_id)
+            # PASO 3: Si requiere 2FA, devolver temp_token (user_id)
             if requires_2fa:
                 logger.info(f"🔐 Usuario {credentials.email} requiere 2FA - Generando temp_token")
                 
                 return LoginResponse(
                     success=True,
                     requires_2fa=True,
-                    temp_token=user_id,  # ✅ CRÍTICO: Enviar user_id como temp_token
+                    temp_token=user_id,
                     message="Se requiere código de verificación 2FA",
                     user_id=user_id,
                     user={
@@ -255,7 +261,7 @@ async def login(credentials: LoginRequest):
                     }
                 )
             
-            # ✅ PASO 4: Login exitoso sin 2FA - Devolver tokens
+            # PASO 4: Login exitoso sin 2FA - Devolver tokens
             logger.info(f"✅ Login exitoso para: {credentials.email} (sin 2FA)")
             
             user_data = {
@@ -534,7 +540,7 @@ async def disable_2fa(current_user: dict = Depends(get_current_user)):
 @router.post("/2fa/verify-login")
 async def verify_2fa_login(request: TwoFactorLoginVerifyRequest):
     """
-    ✅ CORREGIDO: Verifica código 2FA durante el login.
+    Verifica código 2FA durante el login.
     Acepta temp_token como user_id y devuelve JWT si el código es válido.
     """
     try:
@@ -553,7 +559,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest):
         
         user_id = temp_token
         
-        # ✅ Intentar verificar con TOTP
+        # Intentar verificar con TOTP
         secret = two_factor_service.get_user_2fa_secret(user_id)
         is_valid = False
         
@@ -568,7 +574,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest):
             logger.warning(f"⚠️ Código 2FA inválido para usuario {user_id}")
             raise HTTPException(status_code=401, detail="Código 2FA inválido o expirado")
         
-        # ✅ Código válido - Obtener datos del usuario
+        # Código válido - Obtener datos del usuario
         from app.routes.passkeys import supabase_query
         
         users = supabase_query("profiles", "GET", params={"id": user_id})
@@ -581,7 +587,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest):
         
         logger.info(f"✅ Código 2FA válido para: {user_email}")
         
-        # ✅ Generar token JWT final
+        # Generar token JWT final
         now = datetime.now(timezone.utc)
         token_data = {
             "sub": str(user_id),
@@ -609,7 +615,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest):
             "access_token": jwt_token,
             "refresh_token": jwt_token,
             "token_type": "bearer",
-            "expires_in": 604800,  # 7 días en segundos
+            "expires_in": 604800,
             "user": {
                 "id": user_id,
                 "email": user_email,

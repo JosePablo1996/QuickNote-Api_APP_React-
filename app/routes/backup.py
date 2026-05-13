@@ -15,19 +15,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/backup", tags=["backup"])
 
 
-def get_user_client(token: str = None):
+def get_user_client(token: str):
     """
-    Obtiene un cliente de Supabase con token si está disponible.
-    🔧 CORREGIDO: Maneja correctamente la creación del cliente con token.
+    Obtiene un cliente de Supabase con token.
+    🔧 CORREGIDO: SIEMPRE usa with_token() para tener el método table()
     """
-    if token:
-        # Si hay token, crear cliente con token (tiene método table())
-        return supabase_client.with_token(token)
-    else:
-        # Si no hay token, usar el cliente base (también debe tener table())
-        # Pero el cliente base NO tiene table(), hay que crear uno con token vacío?
-        # Mejor: crear un cliente sin autenticación específica
-        return supabase_client.with_token("")  # Token vacío para operaciones sin auth
+    # with_token() siempre devuelve SupabaseClientWithToken que SÍ tiene table()
+    return supabase_client.with_token(token)
 
 
 @router.post("/cloud", response_model=CloudBackupInDB)
@@ -42,10 +36,9 @@ async def save_backup_to_cloud(
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
         
-        # 🔧 CORREGIDO: Obtener token del payload
+        # Obtener token del payload
         token = current_user.get("token")
         if not token:
-            # Intentar obtener del payload original
             token = current_user.get("payload", {}).get("token")
         
         if not user_id:
@@ -54,18 +47,19 @@ async def save_backup_to_cloud(
                 detail="Usuario no identificado"
             )
         
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de autenticación no encontrado"
+            )
+        
         logger.info(f"☁️ Guardando backup en la nube para usuario: {user_id}")
         logger.info(f"   Notas: {backup_data.note_count}")
         logger.info(f"   Tamaño: {backup_data.file_size} bytes")
         logger.info(f"   Nombre: {backup_data.file_name}")
         
-        # 🔧 CORREGIDO: Crear cliente con token correctamente
-        if token:
-            client = supabase_client.with_token(token)
-        else:
-            # Si no hay token, crear cliente sin autenticación específica
-            # Esto puede fallar por RLS, pero intentamos
-            client = supabase_client.with_token("")
+        # Crear cliente con token (SIEMPRE tiene table())
+        client = get_user_client(token)
         
         # Preparar datos para insertar
         insert_data = {
@@ -73,11 +67,11 @@ async def save_backup_to_cloud(
             "file_name": backup_data.file_name,
             "file_size": backup_data.file_size,
             "note_count": backup_data.note_count,
-            "notes_data": json.dumps(backup_data.notes_data),  # Convertir a JSON string
+            "notes_data": json.dumps(backup_data.notes_data),
             "created_at": datetime.now().isoformat()
         }
         
-        # 🔧 CORREGIDO: Usar .table() en el cliente con token
+        # Insertar en Supabase
         result = client.table("cloud_backups").insert(insert_data)
         
         if not result or len(result) == 0:
@@ -116,7 +110,7 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
         
-        # 🔧 CORREGIDO: Obtener token
+        # Obtener token
         token = current_user.get("token")
         if not token:
             token = current_user.get("payload", {}).get("token")
@@ -127,16 +121,18 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
                 detail="Usuario no identificado"
             )
         
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de autenticación no encontrado"
+            )
+        
         logger.info(f"📋 Obteniendo backups en la nube para usuario: {user_id}")
         
-        # 🔧 CORREGIDO: Crear cliente con token
-        if token:
-            client = supabase_client.with_token(token)
-        else:
-            client = supabase_client.with_token("")
+        # Crear cliente con token (SIEMPRE tiene table())
+        client = get_user_client(token)
         
-        # Consultar backups del usuario (solo metadatos, sin notes_data)
-        # 🔧 CORREGIDO: Usar .execute() al final
+        # Consultar backups del usuario
         result = client.table("cloud_backups")\
             .select("id, user_id, file_name, file_size, note_count, created_at")\
             .eq("user_id", str(user_id))\
@@ -147,6 +143,8 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
         
         return result if result else []
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error en get_cloud_backups: {str(e)}")
         import traceback
@@ -178,12 +176,15 @@ async def get_cloud_backup(
                 detail="Usuario no identificado"
             )
         
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de autenticación no encontrado"
+            )
+        
         logger.info(f"🔍 Obteniendo backup {backup_id} para usuario: {user_id}")
         
-        if token:
-            client = supabase_client.with_token(token)
-        else:
-            client = supabase_client.with_token("")
+        client = get_user_client(token)
         
         # Consultar backup específico
         result = client.table("cloud_backups")\
@@ -239,12 +240,15 @@ async def delete_cloud_backup(
                 detail="Usuario no identificado"
             )
         
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de autenticación no encontrado"
+            )
+        
         logger.info(f"🗑️ Eliminando backup {backup_id} para usuario: {user_id}")
         
-        if token:
-            client = supabase_client.with_token(token)
-        else:
-            client = supabase_client.with_token("")
+        client = get_user_client(token)
         
         # Verificar que el backup existe y pertenece al usuario
         check = client.table("cloud_backups")\

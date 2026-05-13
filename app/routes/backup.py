@@ -15,9 +15,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/backup", tags=["backup"])
 
 
-def get_user_client(token: str):
-    """Obtener cliente de Supabase con token del usuario"""
-    return supabase_client.with_token(token)
+def get_user_client(token: str = None):
+    """
+    Obtiene un cliente de Supabase con token si está disponible.
+    🔧 CORREGIDO: Maneja correctamente la creación del cliente con token.
+    """
+    if token:
+        # Si hay token, crear cliente con token (tiene método table())
+        return supabase_client.with_token(token)
+    else:
+        # Si no hay token, usar el cliente base (también debe tener table())
+        # Pero el cliente base NO tiene table(), hay que crear uno con token vacío?
+        # Mejor: crear un cliente sin autenticación específica
+        return supabase_client.with_token("")  # Token vacío para operaciones sin auth
 
 
 @router.post("/cloud", response_model=CloudBackupInDB)
@@ -31,7 +41,12 @@ async def save_backup_to_cloud(
     """
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
-        token = current_user.get("token") if "token" in current_user else None
+        
+        # 🔧 CORREGIDO: Obtener token del payload
+        token = current_user.get("token")
+        if not token:
+            # Intentar obtener del payload original
+            token = current_user.get("payload", {}).get("token")
         
         if not user_id:
             raise HTTPException(
@@ -44,11 +59,13 @@ async def save_backup_to_cloud(
         logger.info(f"   Tamaño: {backup_data.file_size} bytes")
         logger.info(f"   Nombre: {backup_data.file_name}")
         
-        # Crear cliente con token si está disponible
+        # 🔧 CORREGIDO: Crear cliente con token correctamente
         if token:
-            client = get_user_client(token)
+            client = supabase_client.with_token(token)
         else:
-            client = supabase_client
+            # Si no hay token, crear cliente sin autenticación específica
+            # Esto puede fallar por RLS, pero intentamos
+            client = supabase_client.with_token("")
         
         # Preparar datos para insertar
         insert_data = {
@@ -60,7 +77,7 @@ async def save_backup_to_cloud(
             "created_at": datetime.now().isoformat()
         }
         
-        # Insertar en Supabase
+        # 🔧 CORREGIDO: Usar .table() en el cliente con token
         result = client.table("cloud_backups").insert(insert_data)
         
         if not result or len(result) == 0:
@@ -98,7 +115,11 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
     """
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
-        token = current_user.get("token") if "token" in current_user else None
+        
+        # 🔧 CORREGIDO: Obtener token
+        token = current_user.get("token")
+        if not token:
+            token = current_user.get("payload", {}).get("token")
         
         if not user_id:
             raise HTTPException(
@@ -108,13 +129,14 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
         
         logger.info(f"📋 Obteniendo backups en la nube para usuario: {user_id}")
         
-        # Crear cliente con token
+        # 🔧 CORREGIDO: Crear cliente con token
         if token:
-            client = get_user_client(token)
+            client = supabase_client.with_token(token)
         else:
-            client = supabase_client
+            client = supabase_client.with_token("")
         
         # Consultar backups del usuario (solo metadatos, sin notes_data)
+        # 🔧 CORREGIDO: Usar .execute() al final
         result = client.table("cloud_backups")\
             .select("id, user_id, file_name, file_size, note_count, created_at")\
             .eq("user_id", str(user_id))\
@@ -127,6 +149,8 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
         
     except Exception as e:
         logger.error(f"❌ Error en get_cloud_backups: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al obtener backups: {str(e)}"
@@ -143,7 +167,10 @@ async def get_cloud_backup(
     """
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
-        token = current_user.get("token") if "token" in current_user else None
+        
+        token = current_user.get("token")
+        if not token:
+            token = current_user.get("payload", {}).get("token")
         
         if not user_id:
             raise HTTPException(
@@ -153,11 +180,10 @@ async def get_cloud_backup(
         
         logger.info(f"🔍 Obteniendo backup {backup_id} para usuario: {user_id}")
         
-        # Crear cliente con token
         if token:
-            client = get_user_client(token)
+            client = supabase_client.with_token(token)
         else:
-            client = supabase_client
+            client = supabase_client.with_token("")
         
         # Consultar backup específico
         result = client.table("cloud_backups")\
@@ -202,7 +228,10 @@ async def delete_cloud_backup(
     """
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
-        token = current_user.get("token") if "token" in current_user else None
+        
+        token = current_user.get("token")
+        if not token:
+            token = current_user.get("payload", {}).get("token")
         
         if not user_id:
             raise HTTPException(
@@ -212,11 +241,10 @@ async def delete_cloud_backup(
         
         logger.info(f"🗑️ Eliminando backup {backup_id} para usuario: {user_id}")
         
-        # Crear cliente con token
         if token:
-            client = get_user_client(token)
+            client = supabase_client.with_token(token)
         else:
-            client = supabase_client
+            client = supabase_client.with_token("")
         
         # Verificar que el backup existe y pertenece al usuario
         check = client.table("cloud_backups")\

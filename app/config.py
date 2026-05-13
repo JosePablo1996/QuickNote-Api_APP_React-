@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Supabase
     supabase_url: str = os.getenv("SUPABASE_URL", "")
     supabase_key: str = os.getenv("SUPABASE_KEY", "")
+    # ✅ AGREGAR Service Role Key
+    supabase_service_role_key: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_KEY", ""))
     
     # JWT
     jwt_secret: str = os.getenv("JWT_SECRET", "")
@@ -44,6 +46,9 @@ class Settings(BaseSettings):
     version: str = "1.1.0"
     description: str = "API para QuickNote - App de notas moderna"
     environment: str = os.getenv("ENVIRONMENT", "development")
+    
+    # Debug
+    debug: bool = os.getenv("DEBUG", "true").lower() == "true"
     
     # CORS - ORIGENES EXPLICITOS
     allowed_origins: list = [
@@ -86,7 +91,10 @@ logger.info("✅ CONFIGURACION COMPLETA:")
 logger.info(f"Archivo .env existe: {env_path.exists()}")
 logger.info(f"  - Entorno: {settings.environment}")
 logger.info(f"  - Supabase URL: {settings.supabase_url[:40]}...")
-logger.info(f"  - JWT Secret configurado: {'✅ SI' if settings.jwt_secret else '❌ NO'}")
+logger.info(f"  - Supabase Anon Key: {'✅ SI' if settings.supabase_key else '❌ NO'}")
+logger.info(f"  - Supabase Service Role Key: {'✅ SI' if settings.supabase_service_role_key else '❌ NO'}")
+logger.info(f"  - ¿Service Key ≠ Anon Key?: {'✅ SI (correcto)' if settings.supabase_service_role_key != settings.supabase_key else '⚠️ SON IGUALES (problema!)'}")
+logger.info(f"  - JWT Secret: {'✅ SI' if settings.jwt_secret else '❌ NO'}")
 logger.info(f"  - SendGrid API Key: {'✅ SI' if settings.sendgrid_api_key else '❌ NO'}")
 logger.info(f"  - SendGrid From: {settings.sendgrid_from_email}")
 logger.info(f"  - SMTP Host: {settings.smtp_host}")

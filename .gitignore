@@ -64,3 +64,6 @@ logs/
 dist/
 build/
 *.egg-info/
+
+# Archivos sensibles
+NO_SUBIR_A_GITHUB/

@@ -15,11 +15,16 @@ python-multipart==0.0.6
 python-dateutil==2.8.2
 email-validator==2.0.0
 
-# ✅ JWT
+# JWT
 PyJWT==2.8.0
 
-# ✅ Seguridad
+# Seguridad
 cryptography==45.0.7
 
-# ✅ NUEVO: Passkeys/WebAuthn
+# Passkeys/WebAuthn
 webauthn==2.5.0
+
+# 2FA / TOTP (Google Authenticator)
+pyotp==2.9.0
+qrcode[pil]==7.4.2
+Pillow==12.2.0

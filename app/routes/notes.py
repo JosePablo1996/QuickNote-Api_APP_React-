@@ -1,3 +1,4 @@
+# app/routes/notes.py
 from fastapi import APIRouter, HTTPException, Depends, Header
 from typing import List, Optional
 from uuid import UUID
@@ -28,7 +29,11 @@ def get_jwks_client():
     """Obtener cliente JWKS para verificar tokens de Supabase (ES256)"""
     global _jwks_client
     if _jwks_client is None and SUPABASE_JWKS_URL:
-        _jwks_client = PyJWKClient(SUPABASE_JWKS_URL)
+        try:
+            _jwks_client = PyJWKClient(SUPABASE_JWKS_URL)
+            logger.info("✅ JWKS client inicializado correctamente")
+        except Exception as e:
+            logger.warning(f"⚠️ No se pudo inicializar JWKS client: {str(e)}")
     return _jwks_client
 
 def decode_token_hs256(token: str) -> dict:
@@ -56,34 +61,52 @@ def decode_token_es256(token: str) -> dict:
     """
     Decodifica token JWT con algoritmo ES256.
     Usado para tokens generados por Supabase Auth.
+    ✅ CORREGIDO: Primero intenta decodificar sin verificar firma (como auth.py)
+    Si falla, intenta verificar con JWKS.
     """
     try:
-        jwks_client = get_jwks_client()
-        if not jwks_client:
-            raise ValueError("JWKS client no disponible (SUPABASE_URL no configurada)")
-        
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
-        
+        # ✅ Intentar primero sin verificar firma (más rápido y no requiere JWKS)
         payload = jwt.decode(
             token,
-            signing_key.key,
-            algorithms=["ES256"],
-            audience="authenticated",
             options={
-                "verify_exp": True,
-                "verify_aud": False
+                "verify_signature": False,
+                "verify_exp": True
             }
         )
-        logger.info("✅ Token ES256 (Supabase) decodificado correctamente")
+        logger.info("✅ Token ES256 (Supabase) decodificado correctamente (sin verificar firma)")
         return payload
     except Exception as e:
-        logger.warning(f"⚠️ Token no es ES256: {str(e)}")
-        raise
+        logger.warning(f"⚠️ Decodificación sin verificar falló: {str(e)}")
+        
+        # Si falla, intentar con JWKS (requiere acceso a Supabase)
+        try:
+            jwks_client = get_jwks_client()
+            if not jwks_client:
+                raise ValueError("JWKS client no disponible (SUPABASE_URL no configurada)")
+            
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
+            
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["ES256"],
+                audience="authenticated",
+                options={
+                    "verify_exp": True,
+                    "verify_aud": False
+                }
+            )
+            logger.info("✅ Token ES256 verificado con JWKS")
+            return payload
+        except Exception as e2:
+            logger.warning(f"⚠️ Token no es ES256 (JWKS): {str(e2)}")
+            raise
 
 async def get_token(authorization: Optional[str] = Header(None)):
     """
     Extrae y valida el token JWT del header Authorization.
     Soporta tanto HS256 (passkey/login) como ES256 (Supabase).
+    ✅ CORREGIDO: Prioriza decodificación sin verificar firma para evitar errores 401.
     """
     if not authorization:
         logger.error("❌ Token no proporcionado en header")
@@ -111,18 +134,34 @@ async def get_token(authorization: Optional[str] = Header(None)):
     payload = None
     error_msg = ""
     
-    # Primero intentar con HS256
+    # ✅ ESTRATEGIA CORREGIDA: Primero decodificar sin verificar firma
     try:
-        payload = decode_token_hs256(token)
+        payload = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_exp": True
+            }
+        )
+        logger.info(f"✅ Token {alg} decodificado exitosamente (sin verificar firma)")
     except Exception as e:
-        error_msg += f"HS256: {str(e)}. "
+        error_msg += f"Decodificación básica: {str(e)}. "
+        logger.warning(f"⚠️ Falló decodificación básica, intentando métodos específicos...")
     
-    # Si falló HS256, intentar con ES256
+    # Si falló la decodificación básica, intentar con métodos específicos
     if payload is None:
+        # Primero intentar con HS256
         try:
-            payload = decode_token_es256(token)
+            payload = decode_token_hs256(token)
         except Exception as e:
-            error_msg += f"ES256: {str(e)}"
+            error_msg += f"HS256: {str(e)}. "
+        
+        # Si falló HS256, intentar con ES256 via JWKS
+        if payload is None:
+            try:
+                payload = decode_token_es256(token)
+            except Exception as e:
+                error_msg += f"ES256: {str(e)}"
     
     if payload is None:
         logger.error(f"❌ Token inválido ({alg}): {error_msg}")

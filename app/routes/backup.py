@@ -18,10 +18,53 @@ router = APIRouter(prefix="/backup", tags=["backup"])
 def get_user_client(token: str):
     """
     Obtiene un cliente de Supabase con token.
-    🔧 CORREGIDO: SIEMPRE usa with_token() para tener el método table()
+    SIEMPRE usa with_token() para tener el método table()
     """
-    # with_token() siempre devuelve SupabaseClientWithToken que SÍ tiene table()
     return supabase_client.with_token(token)
+
+
+async def enforce_backup_limit(user_id: str, max_backups: int = 10):
+    """
+    Verifica y aplica el límite de backups por usuario.
+    Si excede el límite, elimina los backups más antiguos.
+    
+    Args:
+        user_id: ID del usuario
+        max_backups: Número máximo de backups permitidos (default: 10)
+    """
+    try:
+        # Usar cliente con token vacío para operaciones administrativas
+        # Nota: Esto requiere service role key para funcionar
+        client = supabase_client.with_token("")
+        
+        # Obtener backups del usuario ordenados por fecha (más reciente primero)
+        backups = client.table("cloud_backups")\
+            .select("id, created_at")\
+            .eq("user_id", str(user_id))\
+            .order("created_at", desc=True)\
+            .execute()
+        
+        if not backups:
+            return
+        
+        backup_count = len(backups)
+        
+        if backup_count > max_backups:
+            # Los más antiguos están al final de la lista (después de ordenar desc)
+            to_delete = backups[max_backups:]
+            logger.info(f"🗑️ Excede limite ({backup_count}/{max_backups}), eliminando {len(to_delete)} backups antiguos")
+            
+            for backup in to_delete:
+                client.table("cloud_backups")\
+                    .delete()\
+                    .eq("id", backup["id"])\
+                    .eq("user_id", str(user_id))\
+                    .execute()
+                logger.info(f"   ✅ Eliminado backup antiguo: {backup['id']}")
+                
+    except Exception as e:
+        logger.error(f"Error en enforce_backup_limit: {str(e)}")
+        # No falla si hay error en la limpieza, solo registramos
 
 
 @router.post("/cloud", response_model=CloudBackupInDB)
@@ -32,6 +75,7 @@ async def save_backup_to_cloud(
     """
     Guarda un backup en la nube (Supabase).
     Recibe los datos de las notas y los almacena en la tabla 'cloud_backups'.
+    ✅ NUEVO: Aplica limite de 10 backups por usuario
     """
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
@@ -50,7 +94,7 @@ async def save_backup_to_cloud(
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token de autenticación no encontrado"
+                detail="Token de autenticacion no encontrado"
             )
         
         logger.info(f"☁️ Guardando backup en la nube para usuario: {user_id}")
@@ -58,7 +102,10 @@ async def save_backup_to_cloud(
         logger.info(f"   Tamaño: {backup_data.file_size} bytes")
         logger.info(f"   Nombre: {backup_data.file_name}")
         
-        # Crear cliente con token (SIEMPRE tiene table())
+        # ✅ NUEVO: Verificar limite de backups ANTES de insertar
+        await enforce_backup_limit(user_id, max_backups=10)
+        
+        # Crear cliente con token
         client = get_user_client(token)
         
         # Preparar datos para insertar
@@ -124,12 +171,12 @@ async def get_cloud_backups(current_user: dict = Depends(get_current_user)):
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token de autenticación no encontrado"
+                detail="Token de autenticacion no encontrado"
             )
         
         logger.info(f"📋 Obteniendo backups en la nube para usuario: {user_id}")
         
-        # Crear cliente con token (SIEMPRE tiene table())
+        # Crear cliente con token
         client = get_user_client(token)
         
         # Consultar backups del usuario
@@ -161,7 +208,7 @@ async def get_cloud_backup(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Obtiene un backup específico de la nube (incluye datos de notas).
+    Obtiene un backup especifico de la nube (incluye datos de notas).
     """
     try:
         user_id = current_user.get("user_id") or current_user.get("sub")
@@ -179,14 +226,14 @@ async def get_cloud_backup(
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token de autenticación no encontrado"
+                detail="Token de autenticacion no encontrado"
             )
         
         logger.info(f"🔍 Obteniendo backup {backup_id} para usuario: {user_id}")
         
         client = get_user_client(token)
         
-        # Consultar backup específico
+        # Consultar backup especifico
         result = client.table("cloud_backups")\
             .select("*")\
             .eq("id", str(backup_id))\
@@ -243,7 +290,7 @@ async def delete_cloud_backup(
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token de autenticación no encontrado"
+                detail="Token de autenticacion no encontrado"
             )
         
         logger.info(f"🗑️ Eliminando backup {backup_id} para usuario: {user_id}")
@@ -282,3 +329,47 @@ async def delete_cloud_backup(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al eliminar backup: {str(e)}"
         )
+
+
+@router.get("/cloud/limit/info")
+async def get_backup_limit_info(current_user: dict = Depends(get_current_user)):
+    """
+    Obtiene información sobre el límite de backups del usuario.
+    """
+    try:
+        user_id = current_user.get("user_id") or current_user.get("sub")
+        
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Usuario no identificado"
+            )
+        
+        client = supabase_client.with_token("")
+        
+        backups = client.table("cloud_backups")\
+            .select("id")\
+            .eq("user_id", str(user_id))\
+            .execute()
+        
+        current_count = len(backups) if backups else 0
+        max_limit = 10
+        remaining = max_limit - current_count
+        
+        return {
+            "current": current_count,
+            "max": max_limit,
+            "remaining": remaining,
+            "is_full": remaining <= 0,
+            "is_low": 0 < remaining <= 2
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en get_backup_limit_info: {str(e)}")
+        return {
+            "current": 0,
+            "max": 10,
+            "remaining": 10,
+            "is_full": False,
+            "is_low": False
+        }

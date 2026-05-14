@@ -35,7 +35,6 @@ app = FastAPI(
 
 logger.info("Configurando CORS...")
 
-# Origenes permitidos para desarrollo y produccion
 origins = [
     # Desarrollo local - Frontend Vite/React
     "http://localhost:5173",
@@ -45,10 +44,11 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://127.0.0.1:3000",
-    # Produccion - Frontend en Vercel/Render
+    # Produccion - Frontend en Vercel
     "https://quicknote-web-app.vercel.app",
     "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    "https://quicknote-api-app-react.onrender.com",
+    # ✅ NUEVA: Produccion - Frontend en Render (tu servicio actual)
+    "https://quicknote-web-app.onrender.com",
     # Produccion - Backend en Render
     "https://quicknote-api-app-react.onrender.com",
 ]

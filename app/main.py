@@ -6,7 +6,7 @@ import logging
 import sys
 import os
 
-# Agregar el directorio raíz al path
+# Agregar el directorio raiz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings
@@ -20,17 +20,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Crear la aplicación FastAPI
+# Crear la aplicacion FastAPI
 app = FastAPI(
     title="QuickNote API",
-    description="API para la aplicación de notas QuickNote con autenticación biométrica, OTP, 2FA y Backup en la Nube",
-    version="2.3.0",
+    description="API para la aplicacion de notas QuickNote con autenticacion biometrica, OTP, 2FA, Backup en la Nube y Seguridad Avanzada",
+    version="2.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
 # ============================================
-# CONFIGURACIÓN DE CORS
+# CONFIGURACION DE CORS
 # ============================================
 
 logger.info("Configurando CORS...")
@@ -44,7 +44,7 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://127.0.0.1:3000",
-    # Producción
+    # Produccion
     "https://quicknote-web-app.vercel.app",
     "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
     "https://quicknote-api-app-react.onrender.com",
@@ -76,38 +76,34 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Middleware para loguear todas las peticiones"""
+    """Middleware para loguear todas las peticiones."""
     logger.info(f"{request.method} {request.url.path}")
     
-    # Log de headers importantes
     auth_header = request.headers.get("Authorization")
     origin = request.headers.get("Origin")
     
     if auth_header:
-        # Mostrar solo el tipo de token y primeros caracteres
         token_parts = auth_header.split(' ')
         if len(token_parts) > 1:
-            logger.info(f"Authorization header presente: {token_parts[0]} {token_parts[1][:30]}...")
+            logger.info(f"Authorization: {token_parts[0]} {token_parts[1][:30]}...")
         else:
-            logger.info(f"Authorization header presente: {auth_header[:30]}...")
+            logger.info(f"Authorization: {auth_header[:30]}...")
     
     if origin:
         logger.info(f"Origin: {origin}")
     
-    # Procesar la petición
     response = await call_next(request)
-    
     logger.info(f"Response status: {response.status_code}")
     
     return response
 
 # ============================================
-# EXCEPCIÓN GLOBAL
+# EXCEPCION GLOBAL
 # ============================================
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Manejador global de excepciones"""
+    """Manejador global de excepciones."""
     logger.error(f"Error no manejado: {str(exc)}")
     logger.exception("Stacktrace completo:")
     
@@ -125,28 +121,27 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 logger.info("Incluyendo rutas...")
 
-# ✅ TODOS LOS ROUTERS INCLUIDOS
 app.include_router(notes_router, prefix="/api/v1")
 app.include_router(passkeys_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
-app.include_router(backup_router, prefix="/api/v1")  # 🆕 NUEVO: Backup en la Nube
+app.include_router(backup_router, prefix="/api/v1")
 
 logger.info("Rutas incluidas correctamente")
 logger.info("  - /api/v1/notes/* -> CRUD de notas")
 logger.info("  - /api/v1/passkeys/* -> Gestion de passkeys")
-logger.info("  - /api/v1/auth/* -> Autenticacion (OTP + 2FA)")
-logger.info("  - /api/v1/backup/* -> Backup en la Nube (cloud)")
+logger.info("  - /api/v1/auth/* -> Autenticacion (OTP + 2FA + Seguridad)")
+logger.info("  - /api/v1/backup/* -> Backup en la Nube")
 
 # ============================================
-# ENDPOINTS BÁSICOS
+# ENDPOINTS BASICOS
 # ============================================
 
 @app.get("/")
 async def root():
-    """Endpoint raíz"""
+    """Endpoint raiz."""
     return {
         "message": "QuickNote API",
-        "version": "2.3.0",
+        "version": "2.4.0",
         "status": "online",
         "docs": "/docs",
         "endpoints": {
@@ -156,17 +151,18 @@ async def root():
             "passkeys": "/api/v1/passkeys",
             "auth": "/api/v1/auth",
             "backup": "/api/v1/backup",
-            "2fa": "/api/v1/auth/2fa"
+            "2fa": "/api/v1/auth/2fa",
+            "security": "/api/v1/auth/change-password"
         }
     }
 
 @app.get("/health")
 async def health_check():
-    """Endpoint de health check"""
+    """Endpoint de health check."""
     return {
         "status": "healthy",
         "service": "QuickNote API",
-        "version": "2.3.0",
+        "version": "2.4.0",
         "environment": settings.environment,
         "features": {
             "passkeys": True,
@@ -174,17 +170,21 @@ async def health_check():
             "two_factor": True,
             "notes_crud": True,
             "cloud_backup": True,
+            "password_history": True,
+            "password_expiry": True,
+            "security_events": True,
+            "session_management": True,
             "supabase": True
         }
     }
 
 @app.get("/info")
 async def api_info():
-    """Endpoint de información de la API"""
+    """Endpoint de informacion de la API."""
     return {
         "name": "QuickNote API",
-        "version": "2.3.0",
-        "description": "API para gestion de notas con autenticacion biometrica, OTP, 2FA y Backup en la Nube",
+        "version": "2.4.0",
+        "description": "API para gestion de notas con autenticacion biometrica, OTP, 2FA, Backup en la Nube y Seguridad Avanzada",
         "environment": settings.environment,
         "cors_origins": len(origins),
         "endpoints_disponibles": [
@@ -196,16 +196,16 @@ async def api_info():
             "/api/v1/passkeys/* - Gestion de passkeys",
             "/api/v1/auth/send-otp - Enviar OTP",
             "/api/v1/auth/verify-otp - Verificar OTP",
+            "/api/v1/auth/change-password - Cambiar contrasena",
+            "/api/v1/auth/check-password-expiry - Verificar expiracion",
+            "/api/v1/auth/logout-all-sessions - Cerrar todas las sesiones",
+            "/api/v1/auth/password-policy - Politica de contrasenas",
             "/api/v1/auth/2fa/enable - Activar 2FA",
             "/api/v1/auth/2fa/verify-enable - Verificar y activar 2FA",
             "/api/v1/auth/2fa/status - Estado 2FA",
             "/api/v1/auth/2fa/disable - Desactivar 2FA",
             "/api/v1/auth/2fa/verify-login - Verificar 2FA en login",
-            "/api/v1/auth/2fa/verify-backup - Codigo de respaldo",
-            "/api/v1/backup/cloud - Guardar backup en la nube",
-            "/api/v1/backup/cloud - Listar backups en la nube",
-            "/api/v1/backup/cloud/{backup_id} - Obtener backup especifico",
-            "/api/v1/backup/cloud/{backup_id} - Eliminar backup de la nube"
+            "/api/v1/backup/cloud - Gestion de backups en la nube"
         ],
         "autenticacion": {
             "metodos": [
@@ -214,7 +214,15 @@ async def api_info():
                 "OTP por Email",
                 "TOTP 2FA (Google Authenticator)"
             ],
-            "jwt_algoritmos": ["HS256", "ES256"]
+            "jwt_algoritmos": ["HS256", "ES256"],
+            "seguridad_avanzada": [
+                "Historial de contrasenas",
+                "Expiracion de contrasenas",
+                "Prevencion de reutilizacion",
+                "Cierre de sesiones remotas",
+                "Eventos de seguridad",
+                "Rate limiting"
+            ]
         },
         "backup": {
             "metodos": [
@@ -231,34 +239,34 @@ async def api_info():
 
 @app.on_event("startup")
 async def startup_event():
-    """Evento ejecutado al iniciar la aplicación"""
+    """Evento ejecutado al iniciar la aplicacion."""
     logger.info("=" * 60)
-    logger.info("🚀 QUICKNOTE API INICIADA CORRECTAMENTE")
-    logger.info(f"📦 Version: 2.3.0")
-    logger.info(f"🌍 Entorno: {settings.environment}")
-    logger.info(f"🔗 Supabase URL: {settings.supabase_url}")
-    logger.info(f"🔐 JWT Secret configurado: {'✅ SI' if settings.jwt_secret else '❌ NO'}")
-    logger.info(f"🔑 JWT Secret (primeros 20): {settings.jwt_secret[:20] if settings.jwt_secret else 'N/A'}...")
+    logger.info("QUICKNOTE API INICIADA CORRECTAMENTE")
+    logger.info(f"Version: 2.4.0")
+    logger.info(f"Entorno: {settings.environment}")
+    logger.info(f"Supabase URL: {settings.supabase_url}")
     logger.info("")
-    logger.info("📋 Funcionalidades activas:")
+    logger.info("Funcionalidades activas:")
     logger.info("   ✅ Passkeys (WebAuthn)")
     logger.info("   ✅ OTP por Email")
     logger.info("   ✅ 2FA (TOTP - Google Authenticator)")
     logger.info("   ✅ CRUD de Notas")
-    logger.info("   ✅ Backup en la Nube (Cloud)")
+    logger.info("   ✅ Backup en la Nube")
+    logger.info("   ✅ Historial de contrasenas")
+    logger.info("   ✅ Expiracion de contrasenas")
+    logger.info("   ✅ Prevencion de reutilizacion")
+    logger.info("   ✅ Cierre de sesiones remotas")
+    logger.info("   ✅ Eventos de seguridad")
     logger.info("")
-    logger.info("📡 Endpoints principales:")
+    logger.info("Endpoints principales:")
     logger.info("   - /health - Health check")
     logger.info("   - /info - Informacion de la API")
     logger.info("   - /docs - Documentacion Swagger")
-    logger.info("   - /redoc - Documentacion ReDoc")
-    logger.info("   - /api/v1/notes/* - CRUD de notas")
-    logger.info("   - /api/v1/passkeys/* - Gestion de passkeys")
-    logger.info("   - /api/v1/auth/* - Autenticacion (OTP + 2FA)")
-    logger.info("   - /api/v1/backup/* - Backup en la Nube (cloud)")
+    logger.info("   - /api/v1/auth/change-password - Cambiar contrasena")
+    logger.info("   - /api/v1/auth/password-policy - Politica de contrasenas")
     logger.info("=" * 60)
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Evento ejecutado al detener la aplicación"""
-    logger.info("👋 Aplicacion detenida")
+    """Evento ejecutado al detener la aplicacion."""
+    logger.info("Aplicacion detenida")

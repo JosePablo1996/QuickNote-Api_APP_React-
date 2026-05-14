@@ -1,7 +1,7 @@
 # app/routes/auth.py
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 import secrets
 import logging
 from datetime import datetime, timedelta, timezone
@@ -22,8 +22,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Esquema de seguridad Bearer
 security = HTTPBearer()
 
-# Almacenamiento temporal de OTPs
+# Almacenamiento temporal de OTPs para login normal
 otp_store = {}
+
+# Almacenamiento temporal para reset de contrasena con OTP
+reset_otp_store = {}
 
 # Instancias de servicios
 two_factor_service = TwoFactorService()
@@ -63,7 +66,7 @@ class LoginResponse(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(..., min_length=8)
 
 
 class PasswordChangeResponse(BaseModel):
@@ -110,6 +113,45 @@ class TwoFactorBackupVerifyRequest(BaseModel):
 
 
 # ============================================
+# MODELOS PARA RESET DE CONTRASENA CON OTP
+# ============================================
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordVerifyRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+
+class ForgotPasswordResetRequest(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str = Field(..., min_length=8)
+
+
+class ForgotPasswordResponse(BaseModel):
+    success: bool
+    message: str
+    email_sent: bool = False
+    expires_in: Optional[int] = None
+
+
+class ForgotPasswordVerifyResponse(BaseModel):
+    success: bool
+    message: str
+    temp_token: Optional[str] = None
+    expires_in: int = 300
+
+
+class ForgotPasswordResetResponse(BaseModel):
+    success: bool
+    message: str
+    requires_relogin: bool = True
+
+
+# ============================================
 # FUNCIONES AUXILIARES
 # ============================================
 
@@ -136,24 +178,8 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
 
 
 async def update_user_metadata(user_id: str, metadata: dict) -> bool:
-    """Actualiza metadata del usuario"""
-    try:
-        headers = {
-            "apikey": settings.supabase_key,
-            "Authorization": f"Bearer {settings.supabase_service_role_key}",
-            "Content-Type": "application/json"
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
-                headers=headers,
-                json={"user_metadata": metadata}
-            )
-            return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Error actualizando metadata: {e}")
-        return False
+    """Actualiza metadata del usuario en la tabla profiles"""
+    return await supabase_client.update_user_metadata(user_id, metadata)
 
 
 async def is_password_expired(user_id: str) -> tuple[bool, Optional[int]]:
@@ -193,7 +219,7 @@ async def get_current_user(
 ) -> dict:
     """
     Obtiene el usuario actual a partir del token JWT.
-    Verifica expiracion de contrasena.
+    Verifica session_version para forzar cierre de sesion.
     """
     try:
         token = credentials.credentials if credentials else None
@@ -232,17 +258,29 @@ async def get_current_user(
                 detail="Token no contiene informacion de usuario"
             )
         
+        # Verificar session_version
+        user_metadata = await supabase_client.get_user_metadata(user_id)
+        if user_metadata:
+            session_version = user_metadata.get("session_version")
+            if session_version:
+                token_iat = payload.get("iat")
+                if token_iat:
+                    if float(session_version) > float(token_iat):
+                        logger.warning(f"Sesion expirada para usuario {user_id}")
+                        raise HTTPException(
+                            status_code=401,
+                            detail={
+                                "code": "SESSION_EXPIRED",
+                                "message": "Tu sesion ha sido cerrada. Por favor, inicia sesion nuevamente.",
+                                "requires_relogin": True
+                            }
+                        )
+        
         # Verificar expiracion de contrasena
         is_expired, days_remaining = await is_password_expired(user_id)
         
         if is_expired:
             logger.warning(f"Contrasena expirada para usuario {user_id}")
-            await security_service.log_security_event(
-                user_id=user_id,
-                event_type=SecurityEventType.PASSWORD_EXPIRED,
-                ip_address=request.client.host if request else None,
-                details={"token_alg": token_alg}
-            )
             raise HTTPException(
                 status_code=403,
                 detail={
@@ -251,10 +289,6 @@ async def get_current_user(
                     "requires_password_change": True
                 }
             )
-        
-        # Notificar si esta por expirar
-        if days_remaining is not None and days_remaining <= 7 and days_remaining > 0:
-            logger.info(f"Contrasena por expirar en {days_remaining} dias para {user_id}")
         
         return {
             "user_id": user_id,
@@ -275,7 +309,7 @@ async def get_current_user(
 
 
 # ============================================
-# ENDPOINT: CAMBIAR CONTRASENA
+# ENDPOINT: CAMBIAR CONTRASENA (CON requires_relogin)
 # ============================================
 
 @router.post("/change-password", response_model=PasswordChangeResponse)
@@ -284,28 +318,23 @@ async def change_password(
     current_user: dict = Depends(get_current_user),
     req: Request = None
 ):
-    """Cambia la contrasena del usuario con validaciones de seguridad."""
+    """Cambia la contrasena del usuario y fuerza cierre de sesion."""
     user_id = current_user["user_id"]
     
     try:
-        # Obtener politica de contrasenas
         policy = await supabase_client.get_password_policy()
         
-        # Validar nueva contrasena
         is_valid, errors = password_service.validate_strength(request_data.new_password, policy)
         if not is_valid:
             raise HTTPException(status_code=400, detail={"errors": errors, "message": "La contrasena no cumple los requisitos"})
         
-        # Verificar que la nueva sea diferente a la actual
         if request_data.new_password == request_data.current_password:
             raise HTTPException(status_code=400, detail="La nueva contrasena debe ser diferente a la actual")
         
-        # Obtener usuario actual
         user = await get_user_by_id(user_id)
         if not user:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
-        # Autenticar con contrasena actual
         async with httpx.AsyncClient() as client:
             auth_response = await client.post(
                 f"{settings.supabase_url}/auth/v1/token?grant_type=password",
@@ -314,26 +343,17 @@ async def change_password(
             )
             
             if auth_response.status_code != 200:
-                # Registrar intento fallido
-                await security_service.record_failed_login(user.get("email"), req.client.host if req else "unknown")
                 raise HTTPException(status_code=401, detail="Contrasena actual incorrecta")
         
-        # Verificar historial de contrasenas
         new_password_hash = password_service.hash_for_history(request_data.new_password)
         can_reuse = await supabase_client.check_password_reuse(user_id, new_password_hash, policy.get("prevent_reuse_count", 5))
         
         if not can_reuse:
-            await security_service.log_security_event(
-                user_id=user_id,
-                event_type=SecurityEventType.PASSWORD_REUSE_ATTEMPT,
-                ip_address=req.client.host if req else None
-            )
             raise HTTPException(
                 status_code=400,
                 detail=f"No puedes usar una contrasena que hayas utilizado en las ultimas {policy.get('prevent_reuse_count', 5)} veces"
             )
         
-        # Actualizar contrasena en Supabase
         headers = {
             "apikey": settings.supabase_key,
             "Authorization": f"Bearer {settings.supabase_service_role_key}",
@@ -350,20 +370,19 @@ async def change_password(
             if response.status_code != 200:
                 raise HTTPException(status_code=500, detail="Error al actualizar la contrasena")
         
-        # Calcular fecha de expiracion
         max_age_days = policy.get("max_age_days", 90)
         expires_at = (datetime.now(timezone.utc) + timedelta(days=max_age_days)).isoformat()
         
-        # Actualizar metadata
+        new_session_version = datetime.now(timezone.utc).timestamp()
+        
         await update_user_metadata(user_id, {
             "password_changed_at": datetime.now(timezone.utc).isoformat(),
-            "password_expires_at": expires_at
+            "password_expires_at": expires_at,
+            "session_version": new_session_version,
+            "last_password_change": datetime.now(timezone.utc).isoformat()
         })
         
-        # Registrar en historial
         await supabase_client.record_password_history(user_id, new_password_hash)
-        
-        # Limpiar historial antiguo
         await supabase_client.cleanup_old_password_history(user_id, 20)
         
         # Invalidar todas las sesiones
@@ -373,7 +392,8 @@ async def change_password(
         await security_service.log_security_event(
             user_id=user_id,
             event_type=SecurityEventType.PASSWORD_CHANGED,
-            ip_address=req.client.host if req else None
+            ip_address=req.client.host if req else None,
+            details={"reason": "password_changed", "force_logout": True, "session_version": new_session_version}
         )
         
         # Enviar email de confirmacion
@@ -382,11 +402,11 @@ async def change_password(
             user_name = user.get("user_metadata", {}).get("full_name", "Usuario")
             await email_service.send_password_change_confirmation(user_email, user_name, req.client.host if req else None)
         
-        logger.info(f"Contrasena cambiada exitosamente para usuario {user_id}")
+        logger.info(f"Contrasena cambiada exitosamente para usuario {user_id} - session_version actualizada a {new_session_version}")
         
         return PasswordChangeResponse(
             success=True,
-            message="Contrasena actualizada correctamente. Seras redirigido al inicio de sesion.",
+            message="Contrasena actualizada correctamente. Debes iniciar sesion nuevamente.",
             requires_relogin=True
         )
         
@@ -395,6 +415,194 @@ async def change_password(
     except Exception as e:
         logger.error(f"Error en change_password: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al cambiar contrasena: {str(e)}")
+
+
+# ============================================
+# ENDPOINTS DE RECUPERACION DE CONTRASENA (CON requires_relogin)
+# ============================================
+
+@router.post("/forgot-password/send-otp", response_model=ForgotPasswordResponse)
+async def forgot_password_send_otp(request: ForgotPasswordRequest, req: Request = None):
+    """Paso 1 y 2: Envia un codigo OTP al email del usuario para resetear contrasena."""
+    try:
+        email = request.email.lower()
+        
+        from app.routes.passkeys import supabase_query
+        users = supabase_query("profiles", "GET", params={"email": email})
+        
+        if not users:
+            logger.info(f"Solicitud de reset para email no registrado: {email}")
+            return ForgotPasswordResponse(
+                success=True,
+                message="Si el email existe en nuestro sistema, recibiras un codigo de verificacion.",
+                email_sent=False
+            )
+        
+        code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
+        
+        user = users[0]
+        user_name = user.get("full_name", user.get("username", "Usuario"))
+        
+        reset_otp_store[email] = {
+            "code": code,
+            "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+            "attempts": 0,
+            "user_id": user.get("id"),
+            "user_name": user_name
+        }
+        
+        email_sent = await email_service.send_password_reset_otp(email, code)
+        
+        if email_sent:
+            logger.info(f"OTP de reset enviado a {email}")
+        else:
+            logger.warning(f"No se pudo enviar OTP de reset a {email}")
+        
+        return ForgotPasswordResponse(
+            success=True,
+            message="Si el email existe en nuestro sistema, recibiras un codigo de verificacion.",
+            email_sent=email_sent,
+            expires_in=600
+        )
+        
+    except Exception as e:
+        logger.error(f"Error en forgot_password_send_otp: {e}")
+        raise HTTPException(status_code=500, detail="Error al enviar el codigo")
+
+
+@router.post("/forgot-password/verify-otp", response_model=ForgotPasswordVerifyResponse)
+async def forgot_password_verify_otp(request: ForgotPasswordVerifyRequest, req: Request = None):
+    """Paso 3: Verifica el codigo OTP para resetear contrasena."""
+    try:
+        email = request.email.lower()
+        code = request.code
+        
+        if email not in reset_otp_store:
+            raise HTTPException(status_code=400, detail="No se ha solicitado un codigo para este email")
+        
+        otp_data = reset_otp_store[email]
+        
+        if datetime.now(timezone.utc) > otp_data["expires_at"]:
+            del reset_otp_store[email]
+            raise HTTPException(status_code=400, detail="El codigo ha expirado. Solicita uno nuevo")
+        
+        if otp_data["attempts"] >= 3:
+            del reset_otp_store[email]
+            raise HTTPException(status_code=400, detail="Demasiados intentos. Solicita un nuevo codigo")
+        
+        if code != otp_data["code"]:
+            otp_data["attempts"] += 1
+            raise HTTPException(status_code=400, detail="Codigo invalido")
+        
+        temp_token = secrets.token_urlsafe(32)
+        
+        reset_otp_store[email]["verified"] = True
+        reset_otp_store[email]["temp_token"] = temp_token
+        
+        logger.info(f"OTP de reset verificado para {email}")
+        
+        return ForgotPasswordVerifyResponse(
+            success=True,
+            message="Codigo verificado correctamente",
+            temp_token=temp_token,
+            expires_in=300
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en forgot_password_verify_otp: {e}")
+        raise HTTPException(status_code=500, detail="Error al verificar el codigo")
+
+
+@router.post("/forgot-password/reset", response_model=ForgotPasswordResetResponse)
+async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Request = None):
+    """
+    Paso 4: Resetea la contrasena usando el codigo OTP verificado.
+    ✅ Requiere relogin obligatorio
+    """
+    try:
+        email = request.email.lower()
+        code = request.code
+        new_password = request.new_password
+        
+        if email not in reset_otp_store:
+            raise HTTPException(status_code=400, detail="Solicitud invalida. Reinicia el proceso")
+        
+        otp_data = reset_otp_store[email]
+        
+        if not otp_data.get("verified"):
+            raise HTTPException(status_code=400, detail="Debes verificar el codigo primero")
+        
+        if code != otp_data.get("code"):
+            raise HTTPException(status_code=400, detail="Token invalido")
+        
+        policy = await supabase_client.get_password_policy()
+        
+        is_valid, errors = password_service.validate_strength(new_password, policy)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail={"errors": errors, "message": "La contrasena no cumple los requisitos"})
+        
+        user_id = otp_data.get("user_id")
+        
+        headers = {
+            "apikey": settings.supabase_key,
+            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
+                headers=headers,
+                json={"password": new_password}
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Error al actualizar la contrasena")
+        
+        max_age_days = policy.get("max_age_days", 90)
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=max_age_days)).isoformat()
+        
+        new_session_version = datetime.now(timezone.utc).timestamp()
+        
+        await update_user_metadata(user_id, {
+            "password_changed_at": datetime.now(timezone.utc).isoformat(),
+            "password_expires_at": expires_at,
+            "password_reset_via_otp": True,
+            "session_version": new_session_version
+        })
+        
+        new_password_hash = password_service.hash_for_history(new_password)
+        await supabase_client.record_password_history(user_id, new_password_hash)
+        await supabase_client.invalidate_all_sessions(user_id)
+        
+        await security_service.log_security_event(
+            user_id=user_id,
+            event_type="PASSWORD_RESET_VIA_OTP",
+            ip_address=req.client.host if req else None,
+            details={"session_version": new_session_version}
+        )
+        
+        user_email = email
+        user_name = otp_data.get("user_name", "Usuario")
+        await email_service.send_password_change_confirmation(user_email, user_name, req.client.host if req else None)
+        
+        del reset_otp_store[email]
+        
+        logger.info(f"Contrasena reseteada via OTP para usuario {user_id} - session_version actualizada a {new_session_version}")
+        
+        return ForgotPasswordResetResponse(
+            success=True,
+            message="Contrasena actualizada correctamente. Debes iniciar sesion con tu nueva contrasena.",
+            requires_relogin=True
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en forgot_password_reset: {e}")
+        raise HTTPException(status_code=500, detail="Error al resetear la contrasena")
 
 
 # ============================================
@@ -438,12 +646,16 @@ async def logout_all_sessions(
     user_id = current_user["user_id"]
     
     try:
+        new_session_version = datetime.now(timezone.utc).timestamp()
+        await update_user_metadata(user_id, {"session_version": new_session_version})
+        
         count = await supabase_client.invalidate_all_sessions(user_id)
         
         await security_service.log_security_event(
             user_id=user_id,
             event_type=SecurityEventType.LOGOUT_ALL_SESSIONS,
-            ip_address=req.client.host if req else None
+            ip_address=req.client.host if req else None,
+            details={"session_version": new_session_version}
         )
         
         return LogoutAllSessionsResponse(
@@ -479,12 +691,12 @@ async def get_password_policy_endpoint():
 
 
 # ============================================
-# ENDPOINTS OTP
+# ENDPOINTS OTP PARA LOGIN NORMAL
 # ============================================
 
 @router.post("/send-otp")
 async def send_otp(request: SendOtpRequest, req: Request = None):
-    """Envía un código OTP al email del usuario."""
+    """Envía un código OTP al email del usuario para login."""
     try:
         email = request.email.lower()
         
@@ -517,7 +729,7 @@ async def send_otp(request: SendOtpRequest, req: Request = None):
 
 @router.post("/verify-otp")
 async def verify_otp(request: VerifyOtpRequest, req: Request = None):
-    """Verifica el código OTP y devuelve un token JWT."""
+    """Verifica el codigo OTP y devuelve un token JWT."""
     try:
         email = request.email.lower()
         code = request.code
@@ -541,7 +753,6 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
         
         del otp_store[email]
         
-        # Buscar usuario en Supabase
         from app.routes.passkeys import supabase_query
         users = supabase_query("profiles", "GET", params={"email": email})
         
@@ -584,12 +795,12 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
 
 
 # ============================================
-# ENDPOINT DE LOGIN (MODIFICADO)
+# ENDPOINT DE LOGIN
 # ============================================
 
 @router.post("/login", response_model=LoginResponse)
 async def login(credentials: LoginRequest, req: Request = None):
-    """Inicia sesion usando Supabase Auth con verificacion de expiracion."""
+    """Inicia sesion usando Supabase Auth."""
     logger.info(f"Intentando login para: {credentials.email}")
     
     try:
@@ -608,8 +819,6 @@ async def login(credentials: LoginRequest, req: Request = None):
             )
             
             if auth_response.status_code != 200:
-                await security_service.record_failed_login(credentials.email, req.client.host if req else "unknown")
-                
                 error_data = {}
                 try:
                     error_data = auth_response.json()
@@ -625,9 +834,6 @@ async def login(credentials: LoginRequest, req: Request = None):
                 else:
                     raise HTTPException(status_code=401, detail=f"Error de autenticacion: {error_msg}")
             
-            # Resetear intentos fallidos en login exitoso
-            await security_service.reset_failed_logins(credentials.email, req.client.host if req else "unknown")
-            
             auth_data = auth_response.json()
             user = auth_data.get("user", {})
             user_id = user.get("id")
@@ -638,7 +844,6 @@ async def login(credentials: LoginRequest, req: Request = None):
             if not user_id:
                 raise HTTPException(status_code=401, detail="No se pudo obtener informacion del usuario")
             
-            # Verificar expiracion de contrasena
             is_expired, _ = await is_password_expired(user_id)
             
             if is_expired:
@@ -654,16 +859,6 @@ async def login(credentials: LoginRequest, req: Request = None):
             
             user_metadata = user.get("user_metadata", {}) or {}
             
-            # Registrar evento de login exitoso
-            await security_service.log_security_event(
-                user_id=user_id,
-                event_type=SecurityEventType.LOGIN_SUCCESS,
-                ip_address=req.client.host if req else None
-            )
-            
-            logger.info(f"Usuario autenticado: {credentials.email} (ID: {user_id})")
-            
-            # Verificar 2FA
             requires_2fa = False
             try:
                 requires_2fa = two_factor_service.is_2fa_enabled(user_id)
@@ -776,11 +971,6 @@ async def verify_enable_2fa(
         if not success:
             raise HTTPException(status_code=500, detail="Error al guardar la configuracion 2FA")
         
-        await security_service.log_security_event(
-            user_id=user_id,
-            event_type=SecurityEventType.TWO_FACTOR_ENABLED
-        )
-        
         logger.info(f"2FA activado para usuario {user_id}")
         
         return {
@@ -818,11 +1008,6 @@ async def disable_2fa(current_user: dict = Depends(get_current_user)):
         if not success:
             raise HTTPException(status_code=500, detail="Error al desactivar 2FA")
         
-        await security_service.log_security_event(
-            user_id=user_id,
-            event_type=SecurityEventType.TWO_FACTOR_DISABLED
-        )
-        
         return {"success": True, "message": "2FA desactivado correctamente"}
     except HTTPException:
         raise
@@ -853,18 +1038,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
             is_valid = two_factor_service.verify_backup_code(user_id, code)
         
         if not is_valid:
-            await security_service.log_security_event(
-                user_id=user_id,
-                event_type=SecurityEventType.TWO_FACTOR_FAILED,
-                ip_address=req.client.host if req else None
-            )
             raise HTTPException(status_code=401, detail="Codigo 2FA invalido o expirado")
-        
-        await security_service.log_security_event(
-            user_id=user_id,
-            event_type=SecurityEventType.TWO_FACTOR_VERIFIED,
-            ip_address=req.client.host if req else None
-        )
         
         from app.routes.passkeys import supabase_query
         users = supabase_query("profiles", "GET", params={"id": user_id})

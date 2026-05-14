@@ -14,12 +14,12 @@ logger = logging.getLogger(__name__)
 
 class SecurityService:
     """
-    Servicio centralizado para seguridad y auditoría.
+    Servicio centralizado para seguridad y auditoria.
     Maneja:
     - Eventos de seguridad
-    - Gestión de sesiones activas
+    - Gestion de sesiones activas
     - Bloqueo de cuentas
-    - Verificación de dispositivos
+    - Verificacion de dispositivos
     - Rate limiting
     """
     
@@ -27,7 +27,7 @@ class SecurityService:
         self.max_login_attempts = 5
         self.lockout_duration_minutes = 15
         self.session_timeout_hours = 24
-        logger.info("✅ SecurityService inicializado")
+        logger.info("SecurityService inicializado")
     
     # ============================================
     # EVENTOS DE SEGURIDAD
@@ -46,15 +46,18 @@ class SecurityService:
         
         Args:
             user_id: ID del usuario
-            event_type: Tipo de evento (PASSWORD_CHANGED, LOGIN_FAILED, etc.)
-            ip_address: Dirección IP del usuario
+            event_type: Tipo de evento
+            ip_address: Direccion IP del usuario
             user_agent: User-Agent del navegador
             details: Detalles adicionales del evento
             
         Returns:
-            True si se registró correctamente
+            True si se registro correctamente
         """
         try:
+            # Usar cliente con service role
+            client = supabase_client.with_service_role()
+            
             event_data = {
                 "user_id": user_id,
                 "event_type": event_type,
@@ -64,10 +67,10 @@ class SecurityService:
                 "created_at": datetime.now(timezone.utc).isoformat()
             }
             
-            result = supabase_client.table("security_events").insert(event_data).execute()
+            result = client.table("security_events").insert(event_data)
             
             if result:
-                logger.info(f"📝 Evento de seguridad registrado: {event_type} para usuario {user_id}")
+                logger.info(f"Evento de seguridad registrado: {event_type} para usuario {user_id}")
                 return True
             return False
             
@@ -88,14 +91,15 @@ class SecurityService:
         Args:
             user_id: ID del usuario
             event_type: Filtrar por tipo de evento (opcional)
-            limit: Número máximo de eventos
-            offset: Desplazamiento para paginación
+            limit: Numero maximo de eventos
+            offset: Desplazamiento para paginacion
             
         Returns:
             Lista de eventos de seguridad
         """
         try:
-            query = supabase_client.table("security_events")\
+            client = supabase_client.with_service_role()
+            query = client.table("security_events")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .order("created_at", desc=True)\
@@ -122,15 +126,16 @@ class SecurityService:
         
         Args:
             user_id: ID del usuario
-            hours: Horas hacia atrás
+            hours: Horas hacia atras
             
         Returns:
             Lista de eventos recientes
         """
         try:
+            client = supabase_client.with_service_role()
             cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
             
-            result = supabase_client.table("security_events")\
+            result = client.table("security_events")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .gte("created_at", cutoff_time)\
@@ -144,7 +149,7 @@ class SecurityService:
             return []
     
     # ============================================
-    # GESTIÓN DE SESIONES
+    # GESTION DE SESIONES
     # ============================================
     
     async def create_session(
@@ -156,19 +161,20 @@ class SecurityService:
         user_agent: Optional[str] = None
     ) -> Optional[Dict]:
         """
-        Crea una nueva sesión activa.
+        Crea una nueva sesion activa.
         
         Args:
             user_id: ID del usuario
-            session_token: Token de sesión
-            device_info: Información del dispositivo
-            ip_address: Dirección IP
+            session_token: Token de sesion
+            device_info: Informacion del dispositivo
+            ip_address: Direccion IP
             user_agent: User-Agent
             
         Returns:
-            Datos de la sesión creada o None
+            Datos de la sesion creada o None
         """
         try:
+            client = supabase_client.with_service_role()
             session_data = {
                 "user_id": user_id,
                 "session_token": session_token,
@@ -180,39 +186,38 @@ class SecurityService:
                 "is_active": True
             }
             
-            result = supabase_client.table("active_sessions").insert(session_data).execute()
+            result = client.table("active_sessions").insert(session_data)
             
             if result and len(result) > 0:
-                logger.info(f"✅ Sesión creada para usuario {user_id}")
+                logger.info(f"Sesion creada para usuario {user_id}")
                 return result[0]
             return None
             
         except Exception as e:
-            logger.error(f"Error creando sesión: {e}")
+            logger.error(f"Error creando sesion: {e}")
             return None
     
     async def update_session_activity(self, session_token: str) -> bool:
         """
-        Actualiza la última actividad de una sesión.
+        Actualiza la ultima actividad de una sesion.
         
         Args:
-            session_token: Token de sesión
+            session_token: Token de sesion
             
         Returns:
-            True si se actualizó correctamente
+            True si se actualizo correctamente
         """
         try:
-            supabase_client.table("active_sessions")\
-                .update({
-                    "last_activity": datetime.now(timezone.utc).isoformat()
-                })\
+            client = supabase_client.with_service_role()
+            client.table("active_sessions")\
+                .update({"last_activity": datetime.now(timezone.utc).isoformat()})\
                 .eq("session_token", session_token)\
                 .execute()
             
             return True
             
         except Exception as e:
-            logger.error(f"Error actualizando actividad de sesión: {e}")
+            logger.error(f"Error actualizando actividad de sesion: {e}")
             return False
     
     async def get_active_sessions(self, user_id: str) -> List[Dict]:
@@ -226,7 +231,8 @@ class SecurityService:
             Lista de sesiones activas
         """
         try:
-            result = supabase_client.table("active_sessions")\
+            client = supabase_client.with_service_role()
+            result = client.table("active_sessions")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .eq("is_active", True)\
@@ -241,25 +247,26 @@ class SecurityService:
     
     async def invalidate_session(self, session_token: str) -> bool:
         """
-        Invalida una sesión específica.
+        Invalida una sesion especifica.
         
         Args:
-            session_token: Token de sesión
+            session_token: Token de sesion
             
         Returns:
-            True si se invalidó correctamente
+            True si se invalido correctamente
         """
         try:
-            supabase_client.table("active_sessions")\
+            client = supabase_client.with_service_role()
+            client.table("active_sessions")\
                 .update({"is_active": False})\
                 .eq("session_token", session_token)\
                 .execute()
             
-            logger.info(f"✅ Sesión invalidada: {session_token[:20]}...")
+            logger.info(f"Sesion invalidada: {session_token[:20]}...")
             return True
             
         except Exception as e:
-            logger.error(f"Error invalidando sesión: {e}")
+            logger.error(f"Error invalidando sesion: {e}")
             return False
     
     async def invalidate_all_sessions(self, user_id: str, exclude_current: Optional[str] = None) -> int:
@@ -268,13 +275,14 @@ class SecurityService:
         
         Args:
             user_id: ID del usuario
-            exclude_current: Token de sesión a excluir (opcional)
+            exclude_current: Token de sesion a excluir (opcional)
             
         Returns:
-            Número de sesiones invalidadas
+            Numero de sesiones invalidadas
         """
         try:
-            query = supabase_client.table("active_sessions")\
+            client = supabase_client.with_service_role()
+            query = client.table("active_sessions")\
                 .update({"is_active": False})\
                 .eq("user_id", user_id)\
                 .eq("is_active", True)
@@ -285,7 +293,7 @@ class SecurityService:
             result = query.execute()
             
             count = len(result) if result else 0
-            logger.info(f"✅ {count} sesiones invalidadas para usuario {user_id}")
+            logger.info(f"{count} sesiones invalidadas para usuario {user_id}")
             return count
             
         except Exception as e:
@@ -294,15 +302,16 @@ class SecurityService:
     
     async def cleanup_expired_sessions(self) -> int:
         """
-        Limpia sesiones expiradas (sin actividad por más de session_timeout_hours).
+        Limpia sesiones expiradas (sin actividad por mas de session_timeout_hours).
         
         Returns:
-            Número de sesiones eliminadas
+            Numero de sesiones eliminadas
         """
         try:
+            client = supabase_client.with_service_role()
             cutoff_time = (datetime.now(timezone.utc) - timedelta(hours=self.session_timeout_hours)).isoformat()
             
-            result = supabase_client.table("active_sessions")\
+            result = client.table("active_sessions")\
                 .update({"is_active": False})\
                 .lt("last_activity", cutoff_time)\
                 .eq("is_active", True)\
@@ -310,7 +319,7 @@ class SecurityService:
             
             count = len(result) if result else 0
             if count > 0:
-                logger.info(f"🧹 Limpiadas {count} sesiones expiradas")
+                logger.info(f"Limpiadas {count} sesiones expiradas")
             return count
             
         except Exception as e:
@@ -327,26 +336,27 @@ class SecurityService:
         
         Args:
             email: Email del usuario
-            ip_address: Dirección IP
+            ip_address: Direccion IP
             
         Returns:
             Dict con estado de bloqueo
         """
         try:
+            client = supabase_client.with_service_role()
+            
             # Buscar registro de intentos fallidos
-            result = supabase_client.table("login_attempts")\
+            result = client.table("login_attempts")\
                 .select("*")\
                 .eq("email", email)\
                 .eq("ip_address", ip_address)\
                 .execute()
             
             if result and len(result) > 0:
-                # Actualizar contador
                 attempt = result[0]
                 new_count = attempt.get("attempt_count", 0) + 1
                 is_locked = new_count >= self.max_login_attempts
                 
-                supabase_client.table("login_attempts")\
+                client.table("login_attempts")\
                     .update({
                         "attempt_count": new_count,
                         "last_attempt": datetime.now(timezone.utc).isoformat(),
@@ -356,8 +366,7 @@ class SecurityService:
                     .eq("id", attempt["id"])\
                     .execute()
             else:
-                # Crear nuevo registro
-                supabase_client.table("login_attempts").insert({
+                client.table("login_attempts").insert({
                     "email": email,
                     "ip_address": ip_address,
                     "attempt_count": 1,
@@ -381,23 +390,24 @@ class SecurityService:
     
     async def reset_failed_logins(self, email: str, ip_address: str) -> bool:
         """
-        Resetea los intentos fallidos de login (después de login exitoso).
+        Resetea los intentos fallidos de login (despues de login exitoso).
         
         Args:
             email: Email del usuario
-            ip_address: Dirección IP
+            ip_address: Direccion IP
             
         Returns:
             True si se resetearon correctamente
         """
         try:
-            supabase_client.table("login_attempts")\
+            client = supabase_client.with_service_role()
+            client.table("login_attempts")\
                 .delete()\
                 .eq("email", email)\
                 .eq("ip_address", ip_address)\
                 .execute()
             
-            logger.info(f"✅ Intentos fallidos reseteados para {email}")
+            logger.info(f"Intentos fallidos reseteados para {email}")
             return True
             
         except Exception as e:
@@ -406,17 +416,18 @@ class SecurityService:
     
     async def is_account_locked(self, email: str, ip_address: str) -> Tuple[bool, Optional[datetime]]:
         """
-        Verifica si una cuenta está bloqueada.
+        Verifica si una cuenta esta bloqueada.
         
         Args:
             email: Email del usuario
-            ip_address: Dirección IP
+            ip_address: Direccion IP
             
         Returns:
-            Tuple (está_bloqueada, fecha_desbloqueo)
+            Tuple (esta_bloqueada, fecha_desbloqueo)
         """
         try:
-            result = supabase_client.table("login_attempts")\
+            client = supabase_client.with_service_role()
+            result = client.table("login_attempts")\
                 .select("*")\
                 .eq("email", email)\
                 .eq("ip_address", ip_address)\
@@ -429,7 +440,6 @@ class SecurityService:
                     if locked_until > datetime.now(timezone.utc):
                         return True, locked_until
                     else:
-                        # Bloqueo expirado, resetear
                         await self.reset_failed_logins(email, ip_address)
                         return False, None
             
@@ -440,7 +450,7 @@ class SecurityService:
             return False, None
     
     # ============================================
-    # VERIFICACIÓN DE DISPOSITIVOS
+    # VERIFICACION DE DISPOSITIVOS
     # ============================================
     
     def generate_device_fingerprint(self, user_agent: str, ip_address: str) -> str:
@@ -449,7 +459,7 @@ class SecurityService:
         
         Args:
             user_agent: User-Agent del navegador
-            ip_address: Dirección IP
+            ip_address: Direccion IP
             
         Returns:
             Hash SHA-256 de la huella
@@ -469,7 +479,8 @@ class SecurityService:
             True si es un dispositivo confiable
         """
         try:
-            result = supabase_client.table("trusted_devices")\
+            client = supabase_client.with_service_role()
+            result = client.table("trusted_devices")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .eq("device_fingerprint", device_fingerprint)\
@@ -499,10 +510,11 @@ class SecurityService:
             user_agent: User-Agent
             
         Returns:
-            True si se agregó correctamente
+            True si se agrego correctamente
         """
         try:
-            supabase_client.table("trusted_devices").insert({
+            client = supabase_client.with_service_role()
+            client.table("trusted_devices").insert({
                 "user_id": user_id,
                 "device_fingerprint": device_fingerprint,
                 "device_name": device_name,
@@ -512,7 +524,7 @@ class SecurityService:
                 "created_at": datetime.now(timezone.utc).isoformat()
             }).execute()
             
-            logger.info(f"✅ Dispositivo confiable agregado para usuario {user_id}")
+            logger.info(f"Dispositivo confiable agregado para usuario {user_id}")
             return True
             
         except Exception as e:
@@ -520,7 +532,7 @@ class SecurityService:
             return False
     
     # ============================================
-    # GENERACIÓN DE TOKENS SEGUROS
+    # GENERACION DE TOKENS SEGUROS
     # ============================================
     
     def generate_secure_token(self, length: int = 32) -> str:
@@ -537,10 +549,10 @@ class SecurityService:
     
     def generate_session_token(self) -> str:
         """
-        Genera un token de sesión único.
+        Genera un token de sesion unico.
         
         Returns:
-            Token de sesión
+            Token de sesion
         """
         return f"session_{secrets.token_urlsafe(32)}"
     
@@ -554,25 +566,25 @@ class SecurityService:
         return secrets.token_urlsafe(32)
     
     # ============================================
-    # AUDITORÍA Y ESTADÍSTICAS
+    # AUDITORIA Y ESTADISTICAS
     # ============================================
     
     async def get_security_stats(self, user_id: str, days: int = 30) -> Dict:
         """
-        Obtiene estadísticas de seguridad de un usuario.
+        Obtiene estadisticas de seguridad de un usuario.
         
         Args:
             user_id: ID del usuario
-            days: Días hacia atrás
+            days: Dias hacia atras
             
         Returns:
-            Dict con estadísticas
+            Dict con estadisticas
         """
         try:
+            client = supabase_client.with_service_role()
             cutoff_time = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
             
-            # Obtener todos los eventos del período
-            events = supabase_client.table("security_events")\
+            events = client.table("security_events")\
                 .select("*")\
                 .eq("user_id", user_id)\
                 .gte("created_at", cutoff_time)\
@@ -580,7 +592,6 @@ class SecurityService:
             
             events = events if events else []
             
-            # Contar por tipo
             stats = {
                 "total_events": len(events),
                 "period_days": days,
@@ -593,7 +604,6 @@ class SecurityService:
                 if event_type:
                     stats["by_type"][event_type] = stats["by_type"].get(event_type, 0) + 1
                 
-                # Últimos 10 eventos
                 if len(stats["recent_activity"]) < 10:
                     stats["recent_activity"].append({
                         "type": event_type,
@@ -601,14 +611,13 @@ class SecurityService:
                         "ip_address": event.get("ip_address")
                     })
             
-            # Obtener sesiones activas
             active_sessions = await self.get_active_sessions(user_id)
             stats["active_sessions_count"] = len(active_sessions)
             
             return stats
             
         except Exception as e:
-            logger.error(f"Error obteniendo estadísticas de seguridad: {e}")
+            logger.error(f"Error obteniendo estadisticas de seguridad: {e}")
             return {
                 "total_events": 0,
                 "period_days": days,

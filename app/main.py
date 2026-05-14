@@ -30,13 +30,14 @@ app = FastAPI(
 )
 
 # ============================================
-# CONFIGURACION DE CORS
+# CONFIGURACION DE CORS (ACTUALIZADA)
 # ============================================
 
 logger.info("Configurando CORS...")
 
+# Origenes permitidos para desarrollo y produccion
 origins = [
-    # Desarrollo local
+    # Desarrollo local - Frontend Vite/React
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
@@ -44,13 +45,17 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://127.0.0.1:3000",
-    # Produccion
+    # Produccion - Frontend en Vercel/Render
     "https://quicknote-web-app.vercel.app",
     "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
+    "https://quicknote-api-app-react.onrender.com",
+    # Produccion - Backend en Render
     "https://quicknote-api-app-react.onrender.com",
 ]
 
 logger.info(f"Origenes permitidos: {len(origins)}")
+for origin in origins:
+    logger.info(f"  - {origin}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,7 +157,8 @@ async def root():
             "auth": "/api/v1/auth",
             "backup": "/api/v1/backup",
             "2fa": "/api/v1/auth/2fa",
-            "security": "/api/v1/auth/change-password"
+            "security": "/api/v1/auth/change-password",
+            "forgot_password": "/api/v1/auth/forgot-password/send-otp"
         }
     }
 
@@ -174,7 +180,12 @@ async def health_check():
             "password_expiry": True,
             "security_events": True,
             "session_management": True,
+            "forgot_password_otp": True,
             "supabase": True
+        },
+        "cors": {
+            "allowed_origins": origins,
+            "credentials_allowed": True
         }
     }
 
@@ -200,6 +211,9 @@ async def api_info():
             "/api/v1/auth/check-password-expiry - Verificar expiracion",
             "/api/v1/auth/logout-all-sessions - Cerrar todas las sesiones",
             "/api/v1/auth/password-policy - Politica de contrasenas",
+            "/api/v1/auth/forgot-password/send-otp - Enviar OTP para reset",
+            "/api/v1/auth/forgot-password/verify-otp - Verificar OTP para reset",
+            "/api/v1/auth/forgot-password/reset - Resetear contrasena con OTP",
             "/api/v1/auth/2fa/enable - Activar 2FA",
             "/api/v1/auth/2fa/verify-enable - Verificar y activar 2FA",
             "/api/v1/auth/2fa/status - Estado 2FA",
@@ -221,7 +235,8 @@ async def api_info():
                 "Prevencion de reutilizacion",
                 "Cierre de sesiones remotas",
                 "Eventos de seguridad",
-                "Rate limiting"
+                "Rate limiting",
+                "Recuperacion por OTP"
             ]
         },
         "backup": {
@@ -245,6 +260,7 @@ async def startup_event():
     logger.info(f"Version: 2.4.0")
     logger.info(f"Entorno: {settings.environment}")
     logger.info(f"Supabase URL: {settings.supabase_url}")
+    logger.info(f"Frontend CORS: {len(origins)} origenes permitidos")
     logger.info("")
     logger.info("Funcionalidades activas:")
     logger.info("   ✅ Passkeys (WebAuthn)")
@@ -257,6 +273,7 @@ async def startup_event():
     logger.info("   ✅ Prevencion de reutilizacion")
     logger.info("   ✅ Cierre de sesiones remotas")
     logger.info("   ✅ Eventos de seguridad")
+    logger.info("   ✅ Recuperacion de contrasena por OTP")
     logger.info("")
     logger.info("Endpoints principales:")
     logger.info("   - /health - Health check")
@@ -264,6 +281,7 @@ async def startup_event():
     logger.info("   - /docs - Documentacion Swagger")
     logger.info("   - /api/v1/auth/change-password - Cambiar contrasena")
     logger.info("   - /api/v1/auth/password-policy - Politica de contrasenas")
+    logger.info("   - /api/v1/auth/forgot-password/* - Recuperacion por OTP")
     logger.info("=" * 60)
 
 @app.on_event("shutdown")

@@ -33,9 +33,9 @@ class EmailService:
         self.use_smtp = bool(self.smtp_user and self.smtp_password)
         
         logger.info("=" * 50)
-        logger.info("EmailService initialized")
-        logger.info(f"   SendGrid: {'YES' if self.use_sendgrid else 'NO'}")
-        logger.info(f"   SMTP: {'YES' if self.use_smtp else 'NO'}")
+        logger.info("EmailService inicializado")
+        logger.info(f"   SendGrid: {'SI' if self.use_sendgrid else 'NO'}")
+        logger.info(f"   SMTP: {'SI' if self.use_smtp else 'NO'}")
         logger.info("=" * 50)
     
     async def send_email(
@@ -45,24 +45,24 @@ class EmailService:
         html_content: str,
         text_content: Optional[str] = None
     ) -> bool:
-        """Send email using SendGrid or SMTP fallback."""
+        """Envia un email usando SendGrid o SMTP (fallback)."""
         if text_content is None:
             text_content = self._html_to_text(html_content)
         
         if self.use_sendgrid:
             success = await self._send_via_sendgrid(to_email, subject, html_content, text_content)
             if success:
-                logger.info(f"Email sent to {to_email} via SendGrid")
+                logger.info(f"Email enviado a {to_email} via SendGrid")
                 return True
-            logger.warning("SendGrid failed, trying SMTP...")
+            logger.warning("Fallo envio via SendGrid, intentando SMTP...")
         
         if self.use_smtp:
             success = await self._send_via_smtp(to_email, subject, html_content, text_content)
             if success:
-                logger.info(f"Email sent to {to_email} via SMTP")
+                logger.info(f"Email enviado a {to_email} via SMTP")
                 return True
         
-        logger.warning(f"Could not send email to {to_email}. Logging content:")
+        logger.warning(f"No se pudo enviar email a {to_email}. Mostrando en logs:")
         logger.info(f"[DEV] To: {to_email}")
         logger.info(f"[DEV] Subject: {subject}")
         logger.info(f"[DEV] Content: {text_content[:200]}...")
@@ -76,7 +76,7 @@ class EmailService:
         html_content: str,
         text_content: str
     ) -> bool:
-        """Send email via SendGrid API."""
+        """Envia email usando SendGrid API."""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -97,7 +97,7 @@ class EmailService:
                 )
                 return response.status_code == 202
         except Exception as e:
-            logger.error(f"SendGrid error: {e}")
+            logger.error(f"Error en SendGrid: {e}")
             return False
     
     async def _send_via_smtp(
@@ -107,7 +107,7 @@ class EmailService:
         html_content: str,
         text_content: str
     ) -> bool:
-        """Send email via SMTP."""
+        """Envia email usando SMTP."""
         try:
             msg = MIMEMultipart('alternative')
             msg["From"] = f"{self.smtp_from_name} <{self.smtp_from}>"
@@ -128,29 +128,32 @@ class EmailService:
             server.quit()
             
             return True
-            
         except Exception as e:
-            logger.error(f"SMTP error: {e}")
+            logger.error(f"Error en SMTP: {e}")
             return False
     
     def _html_to_text(self, html: str) -> str:
-        """Convert HTML to plain text."""
+        """Convierte HTML a texto plano simple."""
         import re
         text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
         text = re.sub(r'<[^>]+>', ' ', text)
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
+    # ============================================
+    # EMAILS DE AUTENTICACION
+    # ============================================
+    
     async def send_otp_email(self, email: str, code: str) -> bool:
-        """Send OTP code for authentication."""
-        subject = f"Your QuickNote verification code: {code}"
+        """Envia codigo OTP para autenticacion de login."""
+        subject = f"Tu codigo de verificacion QuickNote: {code}"
         
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>QuickNote Verification Code</title>
+    <title>Codigo de verificacion QuickNote</title>
     <style>
         body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
         .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
@@ -166,18 +169,18 @@ class EmailService:
     <div class="container">
         <div class="header">
             <h1>QuickNote</h1>
-            <p>Your verification code</p>
+            <p>Tu codigo de verificacion</p>
         </div>
         <div class="content">
-            <p>Use the following code to complete your authentication:</p>
+            <p>Usa el siguiente codigo para completar tu autenticacion:</p>
             <div class="code-box">
                 <span class="code">{code}</span>
             </div>
-            <p>This code expires in 10 minutes.</p>
-            <p>If you did not request this code, please ignore this message.</p>
+            <p>Este codigo expira en 10 minutos.</p>
+            <p>Si no solicitaste este codigo, ignora este mensaje.</p>
         </div>
         <div class="footer">
-            <p>QuickNote - Your secure notes space</p>
+            <p>QuickNote - Tu espacio de notas seguro</p>
         </div>
     </div>
 </body>
@@ -185,28 +188,96 @@ class EmailService:
 """
         
         text_content = f"""
-Your QuickNote verification code is: {code}
+Tu codigo de verificacion QuickNote es: {code}
 
-This code expires in 10 minutes.
+Este codigo expira en 10 minutos.
 
-If you did not request this code, please ignore this message.
+Si no solicitaste este codigo, ignora este mensaje.
 
 ---
-QuickNote - Your secure notes space
+QuickNote - Tu espacio de notas seguro
 """
         
         return await self.send_email(email, subject, html_content, text_content)
     
-    async def send_password_change_confirmation(self, email: str, name: str, ip_address: str = None) -> bool:
-        """Send password change confirmation email."""
-        subject = "Your password has been updated - QuickNote"
+    async def send_password_reset_otp(self, email: str, code: str) -> bool:
+        """Envia codigo OTP para recuperacion de contrasena."""
+        subject = "Recuperacion de contrasena - QuickNote"
         
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Password Updated - QuickNote</title>
+    <title>Recuperacion de contrasena - QuickNote</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
+        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
+        .header {{ background: linear-gradient(135deg, #F59E0B 0%, #DC2626 100%); padding: 30px; text-align: center; }}
+        .header h1 {{ color: white; margin: 0; }}
+        .content {{ padding: 30px; text-align: center; }}
+        .code-box {{ background: #f8f9fa; border: 2px dashed #F59E0B; border-radius: 12px; padding: 20px; margin: 20px 0; }}
+        .code {{ font-size: 48px; font-weight: bold; color: #F59E0B; letter-spacing: 8px; }}
+        .warning {{ color: #666; font-size: 14px; margin-top: 20px; }}
+        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>QuickNote</h1>
+            <p>Recuperacion de contrasena</p>
+        </div>
+        <div class="content">
+            <p>Hemos recibido una solicitud para restablecer tu contrasena.</p>
+            <p>Usa el siguiente codigo para continuar:</p>
+            <div class="code-box">
+                <span class="code">{code}</span>
+            </div>
+            <div class="warning">
+                Este codigo expira en <strong>10 minutos</strong><br>
+                Si no solicitaste este cambio, ignora este mensaje.
+            </div>
+        </div>
+        <div class="footer">
+            <p>QuickNote - Tu espacio de notas seguro</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+        
+        text_content = f"""
+Recuperacion de contrasena - QuickNote
+
+Hemos recibido una solicitud para restablecer tu contrasena.
+
+Tu codigo de verificacion es: {code}
+
+Este codigo expira en 10 minutos.
+
+Si no solicitaste este cambio, ignora este mensaje.
+
+---
+QuickNote - Tu espacio de notas seguro
+"""
+        
+        return await self.send_email(email, subject, html_content, text_content)
+    
+    # ============================================
+    # EMAILS DE SEGURIDAD
+    # ============================================
+    
+    async def send_password_change_confirmation(self, email: str, name: str, ip_address: str = None) -> bool:
+        """Envia confirmacion de cambio de contrasena."""
+        subject = "Tu contrasena ha sido actualizada - QuickNote"
+        
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Contrasena actualizada - QuickNote</title>
     <style>
         body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
         .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
@@ -221,23 +292,23 @@ QuickNote - Your secure notes space
     <div class="container">
         <div class="header">
             <h1>QuickNote</h1>
-            <p>Password change confirmation</p>
+            <p>Confirmacion de cambio de contrasena</p>
         </div>
         <div class="content">
-            <h2>Hello {name}!</h2>
-            <p>Your password has been <strong>successfully updated</strong>.</p>
+            <h2>Hola {name}!</h2>
+            <p>Tu contrasena ha sido <strong>actualizada exitosamente</strong>.</p>
             
             <div class="info-box">
-                <strong>Change details:</strong><br>
-                ? Date: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}<br>
-                ? IP: {ip_address or 'Not recorded'}
+                <strong>Detalles del cambio:</strong><br>
+                ? Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}<br>
+                ? IP: {ip_address or 'No registrada'}
             </div>
             
-            <p><strong>Didn't make this change?</strong><br>
-            If you did not change your password, please contact our support immediately.</p>
+            <p><strong>No realizaste este cambio?</strong><br>
+            Si no fuiste tu quien cambio la contrasena, contacta inmediatamente a nuestro soporte.</p>
         </div>
         <div class="footer">
-            <p>QuickNote - Your secure notes space</p>
+            <p>QuickNote - Tu espacio de notas seguro</p>
         </div>
     </div>
 </body>
@@ -245,33 +316,33 @@ QuickNote - Your secure notes space
 """
         
         text_content = f"""
-Hello {name},
+Hola {name},
 
-Your password has been successfully updated.
+Tu contrasena ha sido actualizada exitosamente.
 
-Change details:
-- Date: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-- IP: {ip_address or 'Not recorded'}
+Detalles del cambio:
+- Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+- IP: {ip_address or 'No registrada'}
 
-Didn't make this change?
-If you did not change your password, please contact our support immediately.
+No realizaste este cambio?
+Si no fuiste tu, contacta inmediatamente a nuestro soporte.
 
 ---
-QuickNote - Your secure notes space
+QuickNote - Tu espacio de notas seguro
 """
         
         return await self.send_email(email, subject, html_content, text_content)
     
     async def send_password_expiry_warning(self, email: str, name: str, days_remaining: int) -> bool:
-        """Send password expiry warning email."""
-        subject = f"Your password will expire in {days_remaining} days - QuickNote"
+        """Envia advertencia de expiracion de contrasena."""
+        subject = f"Tu contrasena expirara en {days_remaining} dias - QuickNote"
         
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Password Expiry Warning - QuickNote</title>
+    <title>Advertencia de expiracion - QuickNote</title>
     <style>
         body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
         .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
@@ -286,20 +357,20 @@ QuickNote - Your secure notes space
     <div class="container">
         <div class="header">
             <h1>QuickNote</h1>
-            <p>Expiry warning</p>
+            <p>Advertencia de expiracion</p>
         </div>
         <div class="content">
-            <h2>Hello {name}!</h2>
-            <p>Your password will expire in:</p>
+            <h2>Hola {name}!</h2>
+            <p>Tu contrasena expirara en:</p>
             
             <div class="days">
-                {days_remaining} day{'' if days_remaining == 1 else 's'}
+                {days_remaining} dia{'' if days_remaining == 1 else 's'}
             </div>
             
-            <p>We recommend changing your password as soon as possible to keep your account secure.</p>
+            <p>Te recomendamos cambiar tu contrasena lo antes posible para mantener la seguridad de tu cuenta.</p>
         </div>
         <div class="footer">
-            <p>QuickNote - Your secure notes space</p>
+            <p>QuickNote - Tu espacio de notas seguro</p>
         </div>
     </div>
 </body>
@@ -307,29 +378,29 @@ QuickNote - Your secure notes space
 """
         
         text_content = f"""
-Hello {name},
+Hola {name},
 
-Your password will expire in {days_remaining} day{'' if days_remaining == 1 else 's'}.
+Tu contrasena expirara en {days_remaining} dia{'' if days_remaining == 1 else 's'}.
 
-We recommend changing your password as soon as possible to keep your account secure.
+Te recomendamos cambiar tu contrasena lo antes posible para mantener la seguridad de tu cuenta.
 
 ---
-QuickNote - Your secure notes space
+QuickNote - Tu espacio de notas seguro
 """
         
         return await self.send_email(email, subject, html_content, text_content)
     
     async def send_security_alert(self, email: str, name: str, alert_type: str, details: Dict) -> bool:
-        """Send security alert email."""
+        """Envia alerta de seguridad."""
         alert_titles = {
-            "new_device": "New device detected",
-            "multiple_failures": "Multiple failed login attempts",
-            "password_changed": "Password change detected",
-            "suspicious_activity": "Suspicious activity detected"
+            "new_device": "Nuevo dispositivo detectado",
+            "multiple_failures": "Multiples intentos fallidos de inicio de sesion",
+            "password_changed": "Cambio de contrasena detectado",
+            "suspicious_activity": "Actividad sospechosa detectada"
         }
         
-        title = alert_titles.get(alert_type, "Security alert")
-        subject = f"Security alert - QuickNote"
+        title = alert_titles.get(alert_type, "Alerta de seguridad")
+        subject = f"Alerta de seguridad - QuickNote"
         
         details_text = ""
         for key, value in details.items():
@@ -340,7 +411,7 @@ QuickNote - Your secure notes space
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Security Alert - QuickNote</title>
+    <title>Alerta de seguridad - QuickNote</title>
     <style>
         body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
         .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
@@ -355,22 +426,22 @@ QuickNote - Your secure notes space
     <div class="container">
         <div class="header">
             <h1>QuickNote</h1>
-            <p>Security alert</p>
+            <p>Alerta de seguridad</p>
         </div>
         <div class="content">
-            <h2>Hello {name}!</h2>
-            <p>We detected the following activity on your account:</p>
+            <h2>Hola {name}!</h2>
+            <p>Hemos detectado la siguiente actividad en tu cuenta:</p>
             
             <div class="alert-box">
                 <strong>{title}</strong><br>
                 {details_text}
             </div>
             
-            <p><strong>Don't recognize this activity?</strong><br>
-            If this wasn't you, we recommend changing your password immediately.</p>
+            <p><strong>No reconoces esta actividad?</strong><br>
+            Si no fuiste tu, recomendamos cambiar tu contrasena inmediatamente.</p>
         </div>
         <div class="footer">
-            <p>QuickNote - Your secure notes space</p>
+            <p>QuickNote - Tu espacio de notas seguro</p>
         </div>
     </div>
 </body>
@@ -378,34 +449,36 @@ QuickNote - Your secure notes space
 """
         
         text_content = f"""
-Hello {name},
+Hola {name},
 
-Security alert: {title}
+Alerta de seguridad: {title}
 
-Details:
+Detalles:
 {self._format_details_text(details)}
 
-Don't recognize this activity?
-If this wasn't you, we recommend changing your password immediately.
+No reconoces esta actividad?
+Si no fuiste tu, te recomendamos cambiar tu contrasena inmediatamente.
 
 ---
-QuickNote - Your secure notes space
+QuickNote - Tu espacio de notas seguro
 """
         
         return await self.send_email(email, subject, html_content, text_content)
     
     def _format_details_text(self, details: Dict) -> str:
-        """Format details for plain text."""
+        """Formatea detalles para texto plano."""
         lines = []
         for key, value in details.items():
             lines.append(f"? {key}: {value}")
         return '\n'.join(lines)
 
 
+# Funcion de conveniencia para mantener compatibilidad
 async def send_otp_email(email: str, code: str) -> bool:
-    """Legacy function for OTP email (maintains compatibility)."""
+    """Funcion legacy para enviar OTP (mantiene compatibilidad)."""
     service = EmailService()
     return await service.send_otp_email(email, code)
 
 
+# Instancia global
 email_service = EmailService()

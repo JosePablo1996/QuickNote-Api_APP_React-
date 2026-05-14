@@ -201,32 +201,140 @@ class SupabaseClient:
             return False
     
     # ============================================
-    # METODOS DE USUARIO
+    # METODOS DE USUARIO (CORREGIDOS CON MAPEO DE CAMPOS)
     # ============================================
     
     async def get_user_metadata(self, user_id: str) -> Optional[Dict]:
-        """Obtiene metadata de un usuario desde la tabla profiles."""
+        """
+        Obtiene metadata de un usuario desde la tabla profiles.
+        Devuelve los nombres de campos consistentes con el backend.
+        """
         try:
             client = self.with_service_role()
             result = client.table("profiles").select("*").eq("id", user_id).execute()
             if result and len(result) > 0:
-                return result[0]
+                user_data = result[0]
+                # Mapear nombres de vuelta para consistencia con el backend
+                return {
+                    "id": user_data.get("id"),
+                    "full_name": user_data.get("full_name"),
+                    "avatar": user_data.get("avatar_url"),      # avatar_url -> avatar
+                    "banner": user_data.get("banner_url"),      # banner_url -> banner
+                    "email": user_data.get("email"),
+                    "session_version": user_data.get("session_version"),
+                    "password_changed_at": user_data.get("password_changed_at"),
+                    "password_expires_at": user_data.get("password_expires_at"),
+                    "password_reset_via_otp": user_data.get("password_reset_via_otp"),
+                    "updated_at": user_data.get("updated_at")
+                }
             return None
         except Exception as e:
             logger.error(f"Error obteniendo usuario: {e}")
             return None
     
     async def update_user_metadata(self, user_id: str, metadata: Dict) -> bool:
-        """Actualiza metadata de un usuario."""
+        """
+        Actualiza metadata de un usuario en la tabla profiles.
+        Mapea los nombres de campos del backend a los nombres reales en la tabla.
+        """
         try:
             client = self.with_service_role()
-            result = client.table("profiles")\
-                .update({**metadata, "updated_at": datetime.now(timezone.utc).isoformat()})\
-                .eq("id", user_id)\
-                .execute()
-            return result is not None and len(result) > 0
+            
+            # Mapeo de campos del backend a nombres reales en la tabla
+            field_mapping = {
+                "avatar": "avatar_url",
+                "banner": "banner_url",
+                "full_name": "full_name",
+                "session_version": "session_version",
+                "password_changed_at": "password_changed_at",
+                "password_expires_at": "password_expires_at",
+                "password_reset_via_otp": "password_reset_via_otp",
+                "username": "username",
+                "bio": "bio"
+            }
+            
+            # Campos permitidos en la tabla profiles (usando nombres reales)
+            allowed_fields = [
+                "avatar_url",
+                "banner_url", 
+                "full_name",
+                "session_version",
+                "password_changed_at",
+                "password_expires_at",
+                "password_reset_via_otp",
+                "username",
+                "bio"
+            ]
+            
+            logger.info(f"Actualizando metadata para usuario {user_id}: {metadata}")
+            
+            # Convertir nombres de campos y filtrar
+            filtered_metadata = {}
+            for key, value in metadata.items():
+                # Mapear el nombre del campo si es necesario
+                db_field = field_mapping.get(key, key)
+                
+                if db_field in allowed_fields and value is not None:
+                    # Asegurar tipos correctos
+                    if db_field == "session_version":
+                        # Convertir a entero
+                        try:
+                            filtered_metadata[db_field] = int(float(value))
+                        except (ValueError, TypeError):
+                            filtered_metadata[db_field] = 0
+                        logger.info(f"  Campo mapeado: {key} -> {db_field} = {filtered_metadata[db_field]}")
+                    elif db_field in ["password_changed_at", "password_expires_at"]:
+                        # Mantener formato ISO
+                        filtered_metadata[db_field] = value
+                        logger.info(f"  Campo mapeado: {key} -> {db_field} = {value}")
+                    else:
+                        filtered_metadata[db_field] = value
+                        logger.info(f"  Campo mapeado: {key} -> {db_field} = {value}")
+                elif value is None:
+                    logger.warning(f"Campo {key} tiene valor None, ignorando")
+                else:
+                    logger.warning(f"Campo ignorado (no existe en profiles): {key}")
+            
+            if not filtered_metadata:
+                logger.warning(f"No hay campos validos para actualizar para usuario {user_id}")
+                return True
+            
+            # Verificar si existe el perfil
+            existing = client.table("profiles").select("*").eq("id", user_id).execute()
+            logger.info(f"Perfil existe: {existing is not None and len(existing) > 0}")
+            
+            if existing and len(existing) > 0:
+                # Actualizar perfil existente (sin updated_at porque tiene default)
+                result = client.table("profiles")\
+                    .update(filtered_metadata)\
+                    .eq("id", user_id)\
+                    .execute()
+                
+                if result:
+                    logger.info(f"Metadata actualizada para usuario {user_id}: {list(filtered_metadata.keys())}")
+                    return True
+                else:
+                    logger.error(f"Error actualizando perfil para usuario {user_id} - resultado vacio")
+                    return False
+            else:
+                # Crear nuevo perfil
+                insert_data = {
+                    "id": user_id,
+                    **filtered_metadata
+                }
+                result = client.table("profiles").insert(insert_data).execute()
+                
+                if result:
+                    logger.info(f"Perfil creado para usuario {user_id}: {list(filtered_metadata.keys())}")
+                    return True
+                else:
+                    logger.error(f"Error creando perfil para usuario {user_id}")
+                    return False
+            
         except Exception as e:
             logger.error(f"Error actualizando usuario: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
 
@@ -265,6 +373,45 @@ class TableQueryWithToken:
     
     def neq(self, column: str, value: Any):
         self.params[f"{column}"] = f"neq.{value}"
+        return self
+    
+    def gt(self, column: str, value: Any):
+        self.params[f"{column}"] = f"gt.{value}"
+        return self
+    
+    def gte(self, column: str, value: Any):
+        self.params[f"{column}"] = f"gte.{value}"
+        return self
+    
+    def lt(self, column: str, value: Any):
+        self.params[f"{column}"] = f"lt.{value}"
+        return self
+    
+    def lte(self, column: str, value: Any):
+        self.params[f"{column}"] = f"lte.{value}"
+        return self
+    
+    def like(self, column: str, pattern: str):
+        self.params[f"{column}"] = f"like.{pattern}"
+        return self
+    
+    def ilike(self, column: str, pattern: str):
+        self.params[f"{column}"] = f"ilike.{pattern}"
+        return self
+    
+    def in_(self, column: str, values: List):
+        values_str = ','.join(str(v) for v in values)
+        self.params[f"{column}"] = f"in.({values_str})"
+        return self
+    
+    def is_null(self, column: str):
+        """Filtro IS NULL"""
+        self.params[f"{column}"] = "is.null"
+        return self
+    
+    def is_not_null(self, column: str):
+        """Filtro IS NOT NULL"""
+        self.params[f"{column}"] = "not.is.null"
         return self
     
     def order(self, column: str, desc: bool = False):

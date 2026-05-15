@@ -27,7 +27,7 @@ webauthn==2.5.0
 # 2FA / TOTP (Google Authenticator)
 pyotp==2.9.0
 qrcode[pil]==7.4.2
-Pillow>=11.0.0  # Cambia a una versión más reciente
+Pillow>=11.0.0
 
 # Supabase
 supabase>=2.0.0

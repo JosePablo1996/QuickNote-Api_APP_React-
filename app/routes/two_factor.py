@@ -1,497 +1,287 @@
-# app/routes/two_factor.py
-from fastapi import APIRouter, HTTPException, Depends, status
-from app.models.two_factor import (
-    TwoFactorEnableResponse,
-    TwoFactorVerifyRequest,
-    TwoFactorVerifyResponse,
-    TwoFactorLoginVerifyRequest,
-    TwoFactorStatusResponse
-)
-from app.services.two_factor_service import TwoFactorService
-from app.routes.auth import get_current_user
+# app/services/two_factor_service.py
+import os
+import pyotp
+import qrcode
+import io
+import base64
+import hashlib
+import secrets
 import logging
-import jwt
-from datetime import datetime, timedelta, timezone
-from app.config import settings
+from typing import List, Dict, Optional
+from datetime import datetime, timezone
+from app.services.supabase_client import supabase_query
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/auth/2fa", tags=["2FA"])
 
-# ✅ Instancia del servicio 2FA (sin pasar supabase_client porque ya lo maneja internamente)
-two_factor_service = TwoFactorService()
+class TwoFactorService:
+    def __init__(self):
+        pass  # No necesitamos supabase_client, usamos supabase_query directamente
 
-# ============================================
-# FUNCIÓN AUXILIAR PARA OBTENER DATOS DE USUARIO
-# ============================================
-
-async def get_user_data(user_id: str) -> dict:
-    """
-    Obtiene los datos del usuario desde Supabase.
-    Busca en la tabla 'profiles'.
-    """
-    try:
-        from app.routes.passkeys import supabase_query
-        
-        users = supabase_query("profiles", "GET", params={"id": user_id})
-        
-        if users and len(users) > 0:
-            return users[0]
-        
-        logger.warning(f"⚠️ Usuario no encontrado en profiles: {user_id}")
-        return {}
-        
-    except Exception as e:
-        logger.error(f"❌ Error obteniendo usuario {user_id}: {e}")
-        return {}
-
-
-# ============================================
-# ENDPOINT: ACTIVAR 2FA (PASO 1 - GENERAR QR)
-# ============================================
-
-@router.post("/enable", response_model=TwoFactorEnableResponse)
-async def enable_2fa(current_user: dict = Depends(get_current_user)):
-    """
-    Inicia el proceso de activación de 2FA.
-    Genera un secreto TOTP y un QR code para Google Authenticator.
-    """
-    try:
-        user_id = current_user.get("user_id") or current_user.get("sub")
-        user_email = current_user.get("email")
-        
-        if not user_id or not user_email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Información de usuario incompleta"
-            )
-        
-        # Verificar si ya tiene 2FA activado
-        is_enabled = two_factor_service.is_2fa_enabled(user_id)
-        if is_enabled:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="2FA ya está activado. Desactívalo primero para reconfigurar."
-            )
-        
-        # Generar secreto y QR
-        secret, qr_code, manual_key = two_factor_service.generate_secret(user_email)
-        
-        logger.info(f"✅ QR code generado para {user_email}")
-        
-        return TwoFactorEnableResponse(
-            secret=secret,
-            qr_code=qr_code,
-            manual_key=manual_key,
-            message="Escanea el código QR con Google Authenticator. Luego verifica con el código de 6 dígitos."
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error enabling 2FA: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al iniciar la activación de 2FA"
-        )
-
-
-# ============================================
-# ENDPOINT: VERIFICAR Y ACTIVAR 2FA (PASO 2)
-# ============================================
-
-@router.post("/verify-enable", response_model=TwoFactorVerifyResponse)
-async def verify_enable_2fa(
-    request: TwoFactorVerifyRequest,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Verifica el código TOTP y activa 2FA para el usuario.
-    """
-    try:
-        user_id = current_user.get("user_id") or current_user.get("sub")
-        
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Información de usuario incompleta"
-            )
-        
-        logger.info(f"🔍 Verificando código 2FA para activación - Usuario: {user_id}")
-        
-        # Validar código
-        if not request.code or len(request.code) != 6:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El código debe tener 6 dígitos"
-            )
-        
-        if not request.secret:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Secreto no proporcionado"
-            )
-        
-        # Verificar el código TOTP
-        is_valid = two_factor_service.verify_code(request.secret, request.code)
-        
-        if not is_valid:
-            logger.warning(f"⚠️ Código TOTP inválido para activación - Usuario: {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Código inválido. Asegúrate de que Google Authenticator esté sincronizado."
-            )
-        
-        # Generar códigos de respaldo
-        backup_codes = two_factor_service.generate_backup_codes(8)
-        logger.info(f"📝 {len(backup_codes)} códigos de respaldo generados")
-        
-        # Activar 2FA
-        success = two_factor_service.enable_2fa(user_id, request.secret, backup_codes)
-        
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error al guardar la configuración 2FA"
-            )
-        
-        logger.info(f"🎉 2FA activado exitosamente para usuario {user_id}")
-        
-        return TwoFactorVerifyResponse(
-            success=True,
-            message="2FA activado correctamente. Guarda tus códigos de respaldo en un lugar seguro.",
-            backup_codes=backup_codes
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error verifying 2FA enable: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al verificar y activar 2FA"
-        )
-
-
-# ============================================
-# ✅ ENDPOINT CORREGIDO: VERIFICAR 2FA EN LOGIN
-# ============================================
-
-@router.post("/verify-login")
-async def verify_2fa_login(request: TwoFactorLoginVerifyRequest):
-    """
-    ✅ IMPLEMENTADO CORRECTAMENTE:
-    Verifica el código 2FA durante el inicio de sesión.
-    Recibe temp_token (user_id) y código TOTP.
-    Retorna JWT final si el código es válido.
-    
-    Flujo:
-    1. Recibe temp_token (user_id del paso anterior) y código de 6 dígitos
-    2. Busca el secreto TOTP del usuario en two_factor_settings
-    3. Verifica el código TOTP (o código de respaldo)
-    4. Si es válido, genera JWT final con two_factor_verified=True
-    5. Retorna el token y datos del usuario
-    """
-    try:
-        code = request.code
-        temp_token = request.temp_token
-        
-        logger.info("=" * 50)
-        logger.info("🔐 VERIFICANDO CÓDIGO 2FA PARA LOGIN")
-        logger.info(f"   temp_token (user_id): {temp_token}")
-        logger.info(f"   código: {code}")
-        
-        # Validaciones básicas
-        if not code or len(code) != 6 or not code.isdigit():
-            logger.warning(f"⚠️ Código inválido: '{code}'")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El código debe tener 6 dígitos numéricos"
-            )
-        
-        if not temp_token:
-            logger.error("❌ temp_token no proporcionado")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Token temporal no proporcionado. Vuelve a iniciar sesión."
-            )
-        
-        user_id = temp_token
-        logger.info(f"👤 Verificando 2FA para user_id: {user_id}")
-        
-        # ✅ PASO 1: Intentar verificar con TOTP
-        is_valid = False
-        verification_method = "unknown"
-        
-        # Obtener el secreto TOTP del usuario
-        secret = two_factor_service.get_user_2fa_secret(user_id)
-        
-        if secret:
-            logger.info(f"🔑 Secreto TOTP encontrado, verificando código...")
-            is_valid = two_factor_service.verify_code(secret, code)
-            verification_method = "totp"
+    def generate_secret(self, email: str) -> tuple:
+        """Genera un secreto TOTP y un QR code"""
+        try:
+            # Generar secreto
+            secret = pyotp.random_base32()
+            logger.info(f"🔐 Secreto generado: {secret[:10]}...")
             
-            if is_valid:
-                logger.info(f"✅ Código TOTP válido")
+            # Crear URI para Google Authenticator
+            issuer_name = "QuickNote"
+            totp = pyotp.TOTP(secret)
+            provisioning_uri = totp.provisioning_uri(name=email, issuer_name=issuer_name)
+            
+            # Generar QR code
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(provisioning_uri)
+            qr.make(fit=True)
+            
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convertir a base64
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            qr_code = f"data:image/png;base64,{img_str}"
+            
+            # Generar clave manual formateada
+            manual_key = f"{secret[0:4]} {secret[4:8]} {secret[8:12]} {secret[12:16]} {secret[16:20]} {secret[20:24]} {secret[24:28]} {secret[28:32]}"
+            
+            return secret, qr_code, manual_key
+            
+        except Exception as e:
+            logger.error(f"❌ Error generando secreto: {e}")
+            raise
+
+    def verify_code(self, secret: str, code: str) -> bool:
+        """Verifica un código TOTP"""
+        try:
+            totp = pyotp.TOTP(secret)
+            is_valid = totp.verify(code)
+            logger.info(f"🔐 Verificando código TOTP: {'✅ Válido' if is_valid else '❌ Inválido'}")
+            return is_valid
+        except Exception as e:
+            logger.error(f"❌ Error verificando código: {e}")
+            return False
+
+    def generate_backup_codes(self, num_codes: int = 8) -> List[str]:
+        """Genera códigos de respaldo únicos"""
+        backup_codes = []
+        for _ in range(num_codes):
+            # Generar código aleatorio de 10 caracteres alfanuméricos
+            code = secrets.token_hex(5).upper()  # 10 caracteres hex
+            # Agregar guión en medio para legibilidad
+            formatted_code = f"{code[:5]}-{code[5:]}"
+            # Hashear el código para almacenar
+            hashed_code = hashlib.sha256(formatted_code.encode()).hexdigest()
+            backup_codes.append(hashed_code)
+        return backup_codes
+
+    def get_user_2fa_secret(self, user_id: str) -> Optional[str]:
+        """Obtiene el secreto TOTP del usuario (solo si está habilitado)"""
+        try:
+            logger.info(f"🔍 Buscando secreto 2FA para usuario: {user_id}")
+            
+            # CORRECCIÓN: Usar supabase_query directamente
+            result = supabase_query(
+                "two_factor_settings",
+                "GET",
+                params={"user_id": user_id, "enabled": "eq.true"},
+                select="secret, enabled"
+            )
+            
+            logger.info(f"📊 Resultado query: {len(result) if result else 0} registros")
+            
+            if result and len(result) > 0:
+                settings = result[0]
+                secret = settings.get('secret')
+                logger.info(f"✅ Secreto encontrado: {secret[:10] if secret else 'None'}...")
+                return secret
+            
+            # Intentar sin filtrar por enabled (debug)
+            logger.info(f"🔍 Intentando sin filtrar por enabled...")
+            result_all = supabase_query(
+                "two_factor_settings",
+                "GET",
+                params={"user_id": user_id},
+                select="secret, enabled"
+            )
+            
+            if result_all and len(result_all) > 0:
+                logger.info(f"📊 Registro encontrado pero enabled={result_all[0].get('enabled')}")
+                if result_all[0].get('enabled') == True:
+                    return result_all[0].get('secret')
+                else:
+                    logger.warning(f"⚠️ 2FA encontrado pero deshabilitado")
             else:
-                logger.warning(f"⚠️ Código TOTP inválido")
-        else:
-            logger.info(f"🔍 No se encontró secreto TOTP, intentando código de respaldo...")
+                logger.warning(f"⚠️ No se encontró configuración 2FA para usuario {user_id}")
             
-        # ✅ PASO 2: Si falló TOTP (o no hay secreto), intentar código de respaldo
-        if not is_valid:
-            is_valid = two_factor_service.verify_backup_code(user_id, code)
-            verification_method = "backup"
+            return None
             
-            if is_valid:
-                logger.info(f"✅ Código de respaldo válido")
+        except Exception as e:
+            logger.error(f"❌ Error obteniendo secreto 2FA: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def is_2fa_enabled(self, user_id: str) -> bool:
+        """Verifica si el usuario tiene 2FA activado"""
+        try:
+            result = supabase_query(
+                "two_factor_settings",
+                "GET",
+                params={"user_id": user_id, "enabled": "eq.true"},
+                select="enabled"
+            )
+            
+            is_enabled = result and len(result) > 0 and result[0].get('enabled', False)
+            logger.info(f"🔍 2FA enabled for {user_id}: {is_enabled}")
+            return is_enabled
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking 2FA status: {e}")
+            return False
+
+    def enable_2fa(self, user_id: str, secret: str, backup_codes: List[str]) -> bool:
+        """Activa 2FA para el usuario"""
+        try:
+            logger.info(f"🔐 Activando 2FA para usuario: {user_id}")
+            
+            # Verificar si ya existe configuración
+            existing = supabase_query(
+                "two_factor_settings",
+                "GET",
+                params={"user_id": user_id}
+            )
+            
+            now = datetime.now(timezone.utc).isoformat()
+            
+            if existing and len(existing) > 0:
+                # Actualizar existente
+                result = supabase_query(
+                    "two_factor_settings",
+                    "PATCH",
+                    params={"user_id": user_id},
+                    data={
+                        "secret": secret,
+                        "backup_codes": backup_codes,
+                        "enabled": True,
+                        "method": "totp",
+                        "updated_at": now
+                    }
+                )
+                logger.info(f"✅ Configuración 2FA actualizada")
             else:
-                logger.warning(f"⚠️ Código de respaldo inválido")
-        
-        # ✅ PASO 3: Si ambos fallaron, rechazar
-        if not is_valid:
-            logger.error(f"❌ Código 2FA inválido para usuario {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Código 2FA inválido o expirado. Intenta de nuevo."
+                # Crear nueva
+                result = supabase_query(
+                    "two_factor_settings",
+                    "POST",
+                    data={
+                        "user_id": user_id,
+                        "secret": secret,
+                        "backup_codes": backup_codes,
+                        "enabled": True,
+                        "method": "totp",
+                        "created_at": now,
+                        "updated_at": now
+                    }
+                )
+                logger.info(f"✅ Nueva configuración 2FA creada")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error enabling 2FA: {e}")
+            return False
+
+    def disable_2fa(self, user_id: str) -> bool:
+        """Desactiva 2FA para el usuario"""
+        try:
+            logger.info(f"🔐 Desactivando 2FA para usuario: {user_id}")
+            
+            result = supabase_query(
+                "two_factor_settings",
+                "PATCH",
+                params={"user_id": user_id},
+                data={"enabled": False, "updated_at": datetime.now(timezone.utc).isoformat()}
             )
-        
-        # ✅ PASO 4: Código válido - Obtener datos del usuario
-        logger.info(f"🔍 Obteniendo datos del usuario {user_id}...")
-        user_data = await get_user_data(user_id)
-        
-        if not user_data:
-            logger.error(f"❌ Usuario {user_id} no encontrado en profiles")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuario no encontrado. Contacta al soporte."
+            
+            logger.info(f"✅ 2FA desactivado")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error disabling 2FA: {e}")
+            return False
+
+    def verify_backup_code(self, user_id: str, code: str) -> bool:
+        """Verifica un código de respaldo"""
+        try:
+            logger.info(f"🔐 Verificando código de respaldo para usuario: {user_id}")
+            
+            # Obtener usuario con sus códigos de respaldo
+            result = supabase_query(
+                "two_factor_settings",
+                "GET",
+                params={"user_id": user_id, "enabled": "eq.true"},
+                select="backup_codes"
             )
-        
-        user_email = user_data.get("email", "")
-        user_username = user_data.get("username", "")
-        user_full_name = user_data.get("full_name", "")
-        user_avatar = user_data.get("avatar")
-        
-        logger.info(f"✅ Usuario encontrado: {user_email}")
-        logger.info(f"   username: {user_username}")
-        logger.info(f"   full_name: {user_full_name}")
-        logger.info(f"   avatar: {'Sí' if user_avatar else 'No'}")
-        
-        # ✅ PASO 5: Generar token JWT final (HS256)
-        now = datetime.now(timezone.utc)
-        token_data = {
-            "sub": str(user_id),
-            "userId": str(user_id),
-            "email": user_email,
-            "aud": "authenticated",
-            "role": "authenticated",
-            "two_factor_verified": True,
-            "verification_method": verification_method,
-            "user_metadata": {
-                "full_name": user_full_name,
-                "username": user_username
-            },
-            "iat": now,
-            "exp": now + timedelta(days=7)
-        }
-        
-        jwt_token = jwt.encode(token_data, settings.jwt_secret, algorithm="HS256")
-        
-        logger.info(f"🎉 LOGIN CON 2FA EXITOSO para: {user_email}")
-        logger.info(f"   Método de verificación: {verification_method}")
-        logger.info(f"   Token generado: {jwt_token[:50]}...")
-        logger.info("=" * 50)
-        
-        # ✅ PASO 6: Retornar respuesta exitosa
-        return {
-            "success": True,
-            "message": "Código 2FA verificado correctamente. ¡Bienvenido!",
-            "token": jwt_token,
-            "access_token": jwt_token,
-            "refresh_token": jwt_token,  # En producción, generar refresh token separado
-            "token_type": "bearer",
-            "expires_in": 604800,  # 7 días en segundos
-            "verification_method": verification_method,
-            "user": {
-                "id": user_id,
-                "email": user_email,
-                "username": user_username or user_email.split("@")[0],
-                "full_name": user_full_name or user_username or user_email.split("@")[0],
-                "avatar": user_avatar,
-                "email_verified": True,
-                "two_factor_verified": True
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error inesperado en verify_2fa_login: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al verificar 2FA: {str(e)}"
-        )
+            
+            if not result or len(result) == 0:
+                logger.warning(f"⚠️ No se encontró configuración 2FA para usuario {user_id}")
+                return False
+            
+            backup_codes = result[0].get('backup_codes', [])
+            
+            if not backup_codes:
+                logger.warning(f"⚠️ No hay códigos de respaldo para usuario {user_id}")
+                return False
+            
+            # Hashear el código ingresado para comparar
+            hashed_code = hashlib.sha256(code.encode()).hexdigest()
+            
+            # Buscar el código en la lista
+            if hashed_code in backup_codes:
+                logger.info(f"✅ Código de respaldo válido encontrado")
+                # Eliminar el código usado (opcional)
+                backup_codes.remove(hashed_code)
+                supabase_query(
+                    "two_factor_settings",
+                    "PATCH",
+                    params={"user_id": user_id},
+                    data={"backup_codes": backup_codes}
+                )
+                return True
+            
+            logger.warning(f"⚠️ Código de respaldo inválido")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error verificando backup code: {e}")
+            return False
 
-
-# ============================================
-# ENDPOINT: VERIFICAR CÓDIGO DE RESPALDO
-# ============================================
-
-@router.post("/verify-backup")
-async def verify_2fa_backup(request: TwoFactorLoginVerifyRequest):
-    """
-    Verifica código de respaldo 2FA durante el login.
-    Similar a verify-login pero específico para códigos de respaldo.
-    """
-    try:
-        code = request.code
-        temp_token = request.temp_token
-        
-        logger.info(f"🔐 Verificando código de respaldo para user_id: {temp_token}")
-        
-        if not code or not temp_token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Código y token temporal son requeridos"
+    def get_2fa_status(self, user_id: str) -> Dict:
+        """Obtiene el estado completo de 2FA del usuario"""
+        try:
+            logger.info(f"🔍 Obteniendo estado 2FA para: {user_id}")
+            
+            result = supabase_query(
+                "two_factor_settings",
+                "GET",
+                params={"user_id": user_id},
+                select="enabled, method, created_at, updated_at"
             )
-        
-        user_id = temp_token
-        
-        # Verificar código de respaldo
-        is_valid = two_factor_service.verify_backup_code(user_id, code)
-        
-        if not is_valid:
-            logger.warning(f"⚠️ Código de respaldo inválido para usuario {user_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Código de respaldo inválido o ya utilizado"
-            )
-        
-        # Obtener datos del usuario
-        user_data = await get_user_data(user_id)
-        
-        if not user_data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuario no encontrado"
-            )
-        
-        user_email = user_data.get("email", "")
-        
-        logger.info(f"✅ Código de respaldo válido para: {user_email}")
-        
-        # Generar JWT
-        now = datetime.now(timezone.utc)
-        final_token = jwt.encode({
-            "sub": str(user_id),
-            "userId": str(user_id),
-            "email": user_email,
-            "aud": "authenticated",
-            "role": "authenticated",
-            "two_factor_verified": True,
-            "verification_method": "backup",
-            "iat": now,
-            "exp": now + timedelta(days=7)
-        }, settings.jwt_secret, algorithm="HS256")
-        
-        return {
-            "success": True,
-            "message": "Código de respaldo verificado correctamente",
-            "token": final_token,
-            "access_token": final_token,
-            "token_type": "bearer",
-            "expires_in": 604800,
-            "user": {
-                "id": user_id,
-                "email": user_email,
-                "username": user_data.get("username", ""),
-                "full_name": user_data.get("full_name", "")
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error en verify_2fa_backup: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al verificar código de respaldo"
-        )
-
-
-# ============================================
-# ENDPOINT: DESACTIVAR 2FA
-# ============================================
-
-@router.post("/disable")
-async def disable_2fa(
-    current_user: dict = Depends(get_current_user)
-):
-    """Desactiva 2FA para el usuario actual"""
-    try:
-        user_id = current_user.get("user_id") or current_user.get("sub")
-        
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Información de usuario incompleta"
-            )
-        
-        logger.info(f"🔐 Desactivando 2FA para usuario: {user_id}")
-        
-        success = two_factor_service.disable_2fa(user_id)
-        
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error al desactivar 2FA"
-            )
-        
-        logger.info(f"✅ 2FA desactivado para usuario: {user_id}")
-        
-        return {
-            "success": True, 
-            "message": "2FA desactivado correctamente"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error disabling 2FA: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al desactivar 2FA"
-        )
-
-
-# ============================================
-# ENDPOINT: ESTADO DE 2FA
-# ============================================
-
-@router.get("/status", response_model=TwoFactorStatusResponse)
-async def get_2fa_status(current_user: dict = Depends(get_current_user)):
-    """Obtiene el estado actual del 2FA del usuario"""
-    try:
-        user_id = current_user.get("user_id") or current_user.get("sub")
-        
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Información de usuario incompleta"
-            )
-        
-        logger.info(f"🔍 Consultando estado 2FA para usuario: {user_id}")
-        
-        status_data = two_factor_service.get_2fa_status(user_id)
-        
-        logger.info(f"📊 Estado 2FA: {'✅ Activado' if status_data.get('enabled') else '❌ Desactivado'}")
-        
-        return TwoFactorStatusResponse(**status_data)
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting 2FA status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al obtener estado de 2FA"
-        )
+            
+            if result and len(result) > 0:
+                settings = result[0]
+                is_enabled = settings.get('enabled', False)
+                
+                return {
+                    "enabled": is_enabled,
+                    "method": settings.get('method') if is_enabled else None,
+                    "created_at": settings.get('created_at') if is_enabled else None,
+                    "updated_at": settings.get('updated_at') if is_enabled else None
+                }
+            
+            return {"enabled": False, "method": None}
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting 2FA status: {e}")
+            return {"enabled": False, "method": None, "error": str(e)}

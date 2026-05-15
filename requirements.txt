@@ -5,7 +5,7 @@ uvicorn[standard]==0.34.2
 # Cliente HTTP
 httpx==0.28.1
 
-# Pydantic - Versión sin pydantic-core problemático
+# Pydantic
 pydantic==2.10.6
 pydantic-settings==2.9.1
 

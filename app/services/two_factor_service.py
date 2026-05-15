@@ -1,363 +1,272 @@
 # app/services/two_factor_service.py
+import os
 import pyotp
 import qrcode
+import io
 import base64
-from io import BytesIO
-from typing import Optional, Tuple, List, Dict
-import secrets
 import hashlib
-from datetime import datetime, timezone
+import secrets
 import logging
-import httpx
-from app.config import settings
+from typing import List, Dict, Optional
+from datetime import datetime, timezone
+from app.services.supabase_client import supabase_client
 
 logger = logging.getLogger(__name__)
 
 class TwoFactorService:
-    """Servicio para manejar autenticación de dos factores (TOTP) usando REST API de Supabase"""
-    
     def __init__(self):
-        self.issuer_name = "QuickNote"
-        self.supabase_url = settings.supabase_url
-        self.supabase_service_key = settings.supabase_service_role_key
-        
-        logger.info(f"🔑 TwoFactorService inicializado")
-        logger.info(f"   URL: {self.supabase_url}")
-        logger.info(f"   Service Key: {'✅' if self.supabase_service_key else '❌'}")
-    
-    def _supabase_query(
-        self, 
-        table: str, 
-        method: str = "GET", 
-        data: Dict = None, 
-        params: Dict = None
-    ) -> List[Dict]:
-        """
-        Consultas a Supabase REST API.
-        ✅ USA SIEMPRE SERVICE ROLE KEY para bypassear RLS.
-        """
-        base_url = f"{self.supabase_url}/rest/v1/{table}"
-        
-        # ✅ SIEMPRE usar service role key
-        api_key = self.supabase_service_key
-        
-        headers = {
-            "apikey": api_key,
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-        
+        pass
+
+    def generate_secret(self, email: str) -> tuple:
+        """Genera un secreto TOTP y un QR code"""
         try:
-            if method == "GET":
-                query_params = {}
-                if params:
-                    for key, value in params.items():
-                        if isinstance(value, bool):
-                            query_params[key] = f"eq.{str(value).lower()}"
-                        else:
-                            query_params[key] = f"eq.{value}"
-                
-                logger.info(f"🔍 GET {table} params: {query_params}")
-                response = httpx.get(base_url, headers=headers, params=query_params)
-                
-            elif method == "POST":
-                logger.info(f"📝 POST {table}")
-                response = httpx.post(base_url, headers=headers, json=data)
-                
-            elif method == "PATCH":
-                query_params = {}
-                if params:
-                    for key, value in params.items():
-                        if isinstance(value, bool):
-                            query_params[key] = f"eq.{str(value).lower()}"
-                        else:
-                            query_params[key] = f"eq.{value}"
-                
-                logger.info(f"🔧 PATCH {table} params: {query_params}")
-                response = httpx.patch(base_url, headers=headers, json=data, params=query_params)
-                
-            elif method == "DELETE":
-                query_params = {}
-                if params:
-                    for key, value in params.items():
-                        if isinstance(value, bool):
-                            query_params[key] = f"eq.{str(value).lower()}"
-                        else:
-                            query_params[key] = f"eq.{value}"
-                
-                logger.info(f"🗑️ DELETE {table} params: {query_params}")
-                response = httpx.delete(base_url, headers=headers, params=query_params)
-                
-            else:
-                logger.error(f"Método no soportado: {method}")
-                return []
+            secret = pyotp.random_base32()
+            logger.info(f"🔐 Secreto generado: {secret[:10]}...")
             
-            status = response.status_code
-            result = response.json() if response.text else []
+            issuer_name = "QuickNote"
+            totp = pyotp.TOTP(secret)
+            provisioning_uri = totp.provisioning_uri(name=email, issuer_name=issuer_name)
             
-            if status >= 200 and status < 300:
-                count = len(result) if isinstance(result, list) else 1
-                logger.info(f"✅ {method} {table}: {count} resultados (status: {status})")
-                return result if isinstance(result, list) else [result]
-            else:
-                logger.error(f"❌ Error {status}: {response.text[:300]}")
-                return []
-                
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(provisioning_uri)
+            qr.make(fit=True)
+            
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
+            qr_code = f"data:image/png;base64,{img_str}"
+            
+            manual_key = f"{secret[0:4]} {secret[4:8]} {secret[8:12]} {secret[12:16]} {secret[16:20]} {secret[20:24]} {secret[24:28]} {secret[28:32]}"
+            
+            return secret, qr_code, manual_key
+            
         except Exception as e:
-            logger.error(f"❌ Error en _supabase_query: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return []
-    
-    def generate_secret(self, user_email: str) -> Tuple[str, str, str]:
-        """Genera secreto TOTP, QR y clave manual"""
-        secret = pyotp.random_base32()
-        
-        totp = pyotp.TOTP(secret)
-        provisioning_uri = totp.provisioning_uri(
-            name=user_email,
-            issuer_name=self.issuer_name
-        )
-        
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
-        qr.add_data(provisioning_uri)
-        qr.make(fit=True)
-        
-        img = qr.make_image(fill_color="black", back_color="white")
-        
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
-        qr_data_uri = f"data:image/png;base64,{qr_base64}"
-        
-        logger.info(f"✅ Secreto TOTP generado para {user_email}")
-        logger.info(f"   Secret: {secret[:10]}...")
-        
-        return secret, qr_data_uri, secret
-    
+            logger.error(f"❌ Error generando secreto: {e}")
+            raise
+
     def verify_code(self, secret: str, code: str) -> bool:
-        """Verifica código TOTP"""
+        """Verifica un código TOTP"""
         try:
             totp = pyotp.TOTP(secret)
-            is_valid = totp.verify(code, valid_window=1)
-            logger.info(f"🔍 Verificación TOTP: {'✅ Válido' if is_valid else '❌ Inválido'}")
+            is_valid = totp.verify(code)
+            logger.info(f"🔐 Verificando código TOTP: {'✅ Válido' if is_valid else '❌ Inválido'}")
             return is_valid
         except Exception as e:
-            logger.error(f"❌ Error: {e}")
+            logger.error(f"❌ Error verificando código: {e}")
             return False
-    
-    def generate_backup_codes(self, count: int = 8) -> List[str]:
-        """Genera códigos de respaldo"""
-        codes = []
-        for _ in range(count):
-            code = secrets.token_hex(4).upper()
-            formatted = f"{code[:4]}-{code[4:]}"
-            codes.append(formatted)
-        logger.info(f"✅ {count} códigos generados")
-        return codes
-    
-    def hash_backup_code(self, code: str) -> str:
-        """Hashea código de respaldo"""
-        return hashlib.sha256(code.encode()).hexdigest()
-    
-    def enable_2fa(self, user_id: str, secret: str, backup_codes: List[str]) -> bool:
-        """Activa 2FA - Primero elimina, luego inserta"""
+
+    def generate_backup_codes(self, num_codes: int = 8) -> List[str]:
+        """Genera códigos de respaldo únicos como strings planos"""
         try:
-            hashed_codes = [self.hash_backup_code(code) for code in backup_codes]
-            now = datetime.now(timezone.utc).isoformat()
+            backup_codes = []
+            for _ in range(num_codes):
+                code = secrets.token_hex(5).upper()
+                formatted_code = f"{code[:5]}-{code[5:]}"
+                backup_codes.append(formatted_code)
             
-            # ✅ PASO 1: Eliminar cualquier registro existente
-            logger.info(f"🗑️ Eliminando registros anteriores para {user_id}")
-            self._supabase_query(
-                "two_factor_settings",
-                "DELETE",
-                params={"user_id": user_id}
-            )
-            
-            # ✅ PASO 2: Insertar nuevo registro
-            data = {
-                "user_id": user_id,
-                "method": "totp",
-                "secret": secret,
-                "backup_codes": hashed_codes,
-                "enabled": True,
-                "created_at": now,
-                "updated_at": now
-            }
-            
-            logger.info(f"📝 Insertando nuevo registro 2FA")
-            result = self._supabase_query(
-                "two_factor_settings",
-                "POST",
-                data=data
-            )
-            
-            if not result or len(result) == 0:
-                logger.error(f"❌ No se pudo insertar el registro")
-                return False
-            
-            logger.info(f"✅ Registro insertado: id={result[0].get('id')}")
-            
-            # ✅ PASO 3: Verificar inmediatamente
-            verify = self._supabase_query(
-                "two_factor_settings",
-                "GET",
-                params={"user_id": user_id}
-            )
-            
-            if verify and len(verify) > 0:
-                record = verify[0]
-                is_enabled = record.get("enabled", False)
-                logger.info(f"🔍 Verificación: enabled={is_enabled}, id={record.get('id')}")
-                
-                if is_enabled == True:
-                    logger.info(f"🎉 2FA ACTIVADO CORRECTAMENTE para {user_id}")
-                    return True
-            
-            # Si falla la verificación, reintentar
-            logger.warning(f"⚠️ Verificación falló, reintentando...")
-            
-            # Reintentar GET
-            retry = self._supabase_query(
-                "two_factor_settings",
-                "GET",
-                params={"user_id": user_id}
-            )
-            
-            if retry and len(retry) > 0 and retry[0].get("enabled") == True:
-                logger.info(f"🎉 2FA ACTIVADO (reintento exitoso)")
-                return True
-            
-            logger.error(f"❌ No se pudo verificar después de varios intentos")
-            return False
+            logger.info(f"📝 Generados {len(backup_codes)} códigos de respaldo")
+            return backup_codes
             
         except Exception as e:
-            logger.error(f"❌ Error en enable_2fa: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def disable_2fa(self, user_id: str) -> bool:
-        """Desactiva 2FA"""
-        try:
-            now = datetime.now(timezone.utc).isoformat()
-            
-            self._supabase_query(
-                "two_factor_settings",
-                "PATCH",
-                data={
-                    "enabled": False,
-                    "secret": None,
-                    "backup_codes": None,
-                    "updated_at": now
-                },
-                params={"user_id": user_id}
-            )
-            
-            logger.info(f"✅ 2FA deshabilitado para {user_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error: {e}")
-            return False
-    
+            logger.error(f"❌ Error generando backup codes: {e}")
+            backup_codes = []
+            for i in range(num_codes):
+                code = f"{secrets.token_hex(3).upper()}-{secrets.token_hex(2).upper()}"
+                backup_codes.append(code)
+            return backup_codes
+
     def get_user_2fa_secret(self, user_id: str) -> Optional[str]:
-        """Obtiene secreto TOTP"""
+        """Obtiene el secreto TOTP del usuario (solo si está habilitado)"""
         try:
-            result = self._supabase_query(
-                "two_factor_settings",
-                "GET",
-                params={"user_id": user_id, "enabled": True}
-            )
+            logger.info(f"🔍 Buscando secreto 2FA para usuario: {user_id}")
             
-            if result and len(result) > 0:
-                secret = result[0].get("secret")
-                logger.info(f"✅ Secreto encontrado")
-                return secret
+            # Usar supabase_client directamente
+            result = supabase_client.table('two_factor_settings')\
+                .select('secret, enabled')\
+                .eq('user_id', user_id)\
+                .eq('enabled', True)\
+                .execute()
+            
+            logger.info(f"📊 Resultado query: {len(result.data) if result.data else 0} registros")
+            
+            if result.data and len(result.data) > 0:
+                secret = result.data[0].get('secret')
+                if secret:
+                    logger.info(f"✅ Secreto encontrado: {secret[:10]}...")
+                    return secret
             
             return None
             
         except Exception as e:
-            logger.error(f"❌ Error: {e}")
+            logger.error(f"❌ Error obteniendo secreto 2FA: {e}")
             return None
-    
+
     def is_2fa_enabled(self, user_id: str) -> bool:
-        """Verifica si 2FA está activado"""
+        """Verifica si el usuario tiene 2FA activado"""
         try:
-            result = self._supabase_query(
-                "two_factor_settings",
-                "GET",
-                params={"user_id": user_id, "enabled": True}
-            )
+            logger.info(f"🔍 Verificando si 2FA está activado para: {user_id}")
             
-            is_enabled = len(result) > 0 if result else False
-            logger.info(f"🔍 2FA status: {'✅ Activado' if is_enabled else '❌ Desactivado'}")
+            result = supabase_client.table('two_factor_settings')\
+                .select('enabled')\
+                .eq('user_id', user_id)\
+                .eq('enabled', True)\
+                .execute()
+            
+            is_enabled = result.data and len(result.data) > 0
+            logger.info(f"📊 2FA enabled for {user_id}: {is_enabled}")
             return is_enabled
             
         except Exception as e:
-            logger.error(f"❌ Error: {e}")
+            logger.error(f"❌ Error checking 2FA status: {e}")
             return False
-    
-    def verify_backup_code(self, user_id: str, code: str) -> bool:
-        """Verifica código de respaldo"""
+
+    def enable_2fa(self, user_id: str, secret: str, backup_codes: List[str]) -> bool:
+        """Activa 2FA para el usuario"""
         try:
-            hashed_input = self.hash_backup_code(code)
+            logger.info("=" * 50)
+            logger.info(f"🔐 Activando 2FA para usuario: {user_id}")
+            logger.info(f"   Secret: {secret[:10]}...")
+            logger.info(f"   Backup codes count: {len(backup_codes)}")
             
-            result = self._supabase_query(
-                "two_factor_settings",
-                "GET",
-                params={"user_id": user_id, "enabled": True}
-            )
+            now = datetime.now(timezone.utc).isoformat()
             
-            if result and len(result) > 0:
-                backup_codes = result[0].get("backup_codes", [])
-                
-                if hashed_input in backup_codes:
-                    backup_codes.remove(hashed_input)
-                    
-                    self._supabase_query(
-                        "two_factor_settings",
-                        "PATCH",
-                        data={"backup_codes": backup_codes},
-                        params={"user_id": user_id}
-                    )
-                    
-                    return True
+            # Verificar si ya existe
+            existing = supabase_client.table('two_factor_settings')\
+                .select('id')\
+                .eq('user_id', user_id)\
+                .execute()
             
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ Error: {e}")
-            return False
-    
-    def get_2fa_status(self, user_id: str) -> Dict:
-        """Obtiene estado 2FA"""
-        try:
-            result = self._supabase_query(
-                "two_factor_settings",
-                "GET",
-                params={"user_id": user_id}
-            )
-            
-            if result and len(result) > 0:
-                record = result[0]
-                is_enabled = record.get("enabled", False)
-                
-                if is_enabled == True:
-                    return {
+            if existing.data and len(existing.data) > 0:
+                # Actualizar
+                result = supabase_client.table('two_factor_settings')\
+                    .update({
+                        "secret": secret,
+                        "backup_codes": backup_codes,
                         "enabled": True,
-                        "method": record.get("method", "totp"),
-                        "created_at": record.get("created_at")
-                    }
+                        "method": "totp",
+                        "updated_at": now
+                    })\
+                    .eq('user_id', user_id)\
+                    .execute()
+                logger.info(f"   Configuración actualizada")
+            else:
+                # Crear nueva
+                result = supabase_client.table('two_factor_settings')\
+                    .insert({
+                        "user_id": user_id,
+                        "secret": secret,
+                        "backup_codes": backup_codes,
+                        "enabled": True,
+                        "method": "totp",
+                        "created_at": now,
+                        "updated_at": now
+                    })\
+                    .execute()
+                logger.info(f"   Nueva configuración creada")
             
-            return {"enabled": False, "method": None, "created_at": None}
+            # Verificar
+            verify = supabase_client.table('two_factor_settings')\
+                .select('id, enabled')\
+                .eq('user_id', user_id)\
+                .eq('enabled', True)\
+                .execute()
+            
+            if verify.data and len(verify.data) > 0:
+                logger.info(f"✅ 2FA activado y verificado para usuario {user_id}")
+                logger.info("=" * 50)
+                return True
+            else:
+                logger.error(f"❌ No se pudo verificar la activación de 2FA")
+                logger.info("=" * 50)
+                return False
             
         except Exception as e:
-            logger.error(f"❌ Error: {e}")
-            return {"enabled": False, "method": None, "created_at": None}
+            logger.error(f"❌ Error enabling 2FA: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def disable_2fa(self, user_id: str) -> bool:
+        """Desactiva 2FA para el usuario"""
+        try:
+            logger.info(f"🔐 Desactivando 2FA para usuario: {user_id}")
+            
+            now = datetime.now(timezone.utc).isoformat()
+            
+            result = supabase_client.table('two_factor_settings')\
+                .update({"enabled": False, "updated_at": now})\
+                .eq('user_id', user_id)\
+                .execute()
+            
+            logger.info(f"✅ 2FA desactivado")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error disabling 2FA: {e}")
+            return False
+
+    def verify_backup_code(self, user_id: str, code: str) -> bool:
+        """Verifica un código de respaldo"""
+        try:
+            logger.info(f"🔐 Verificando código de respaldo para usuario: {user_id}")
+            
+            result = supabase_client.table('two_factor_settings')\
+                .select('backup_codes')\
+                .eq('user_id', user_id)\
+                .eq('enabled', True)\
+                .execute()
+            
+            if not result.data or len(result.data) == 0:
+                logger.warning(f"⚠️ No se encontró configuración 2FA")
+                return False
+            
+            backup_codes = result.data[0].get('backup_codes', [])
+            
+            if not backup_codes:
+                logger.warning(f"⚠️ No hay códigos de respaldo")
+                return False
+            
+            if code in backup_codes:
+                logger.info(f"✅ Código de respaldo válido")
+                backup_codes.remove(code)
+                supabase_client.table('two_factor_settings')\
+                    .update({"backup_codes": backup_codes})\
+                    .eq('user_id', user_id)\
+                    .execute()
+                return True
+            
+            logger.warning(f"⚠️ Código de respaldo inválido")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error verificando backup code: {e}")
+            return False
+
+    def get_2fa_status(self, user_id: str) -> Dict:
+        """Obtiene el estado completo de 2FA del usuario"""
+        try:
+            logger.info(f"🔍 Obteniendo estado 2FA para: {user_id}")
+            
+            result = supabase_client.table('two_factor_settings')\
+                .select('enabled, method, created_at, updated_at')\
+                .eq('user_id', user_id)\
+                .execute()
+            
+            if result.data and len(result.data) > 0:
+                settings = result.data[0]
+                is_enabled = settings.get('enabled', False)
+                
+                return {
+                    "enabled": is_enabled,
+                    "method": settings.get('method') if is_enabled else None,
+                    "created_at": settings.get('created_at') if is_enabled else None,
+                    "updated_at": settings.get('updated_at') if is_enabled else None
+                }
+            
+            return {"enabled": False, "method": None}
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting 2FA status: {e}")
+            return {"enabled": False, "method": None, "error": str(e)}

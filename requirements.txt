@@ -5,9 +5,8 @@ uvicorn[standard]==0.34.2
 # Cliente HTTP
 httpx==0.28.1
 
-# Pydantic - Versiones estables para Python 3.12
-pydantic==2.11.3
-pydantic-core==2.33.1
+# Pydantic - Versión sin pydantic-core problemático
+pydantic==2.10.6
 pydantic-settings==2.9.1
 
 # Utilidades
@@ -25,7 +24,7 @@ cryptography==44.0.2
 # Passkeys/WebAuthn
 webauthn==2.7.1
 
-# 2FA / TOTP
+# 2FA / TOTP (Google Authenticator)
 pyotp==2.9.0
 qrcode[pil]==8.0
 Pillow==11.2.1

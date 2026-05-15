@@ -4,13 +4,18 @@ services:
     name: quicknote-api
     runtime: python
     repo: https://github.com/JosePablo1996/QuickNote-Api_APP_React-
-    branch: master  # Importante: usa 'master' si esa es tu rama principal
-    buildCommand: pip install -r requirements.txt
+    branch: master
+    buildCommand: |
+      echo "Usando Python 3.12"
+      python3.12 -m pip install --upgrade pip
+      python3.12 -m pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SUPABASE_URL
-        sync: false  # La configuraremos manualmente
+        sync: false
       - key: SUPABASE_KEY
-        sync: false  # La configuraremos manualmente
+        sync: false
       - key: ENVIRONMENT
         value: production
+      - key: PYTHON_VERSION
+        value: 3.12.10

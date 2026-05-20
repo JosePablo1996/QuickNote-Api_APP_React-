@@ -171,6 +171,7 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
             
             if response.status_code == 200:
                 return response.json()
+            logger.warning(f"Usuario {user_id} no encontrado en Supabase Auth")
             return None
     except Exception as e:
         logger.error(f"Error obteniendo usuario: {e}")
@@ -368,6 +369,7 @@ async def change_password(
             )
             
             if response.status_code != 200:
+                logger.error(f"Error actualizando password en Supabase: {response.status_code} - {response.text}")
                 raise HTTPException(status_code=500, detail="Error al actualizar la contrasena")
         
         max_age_days = policy.get("max_age_days", 90)
@@ -520,36 +522,67 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
     """
     Paso 4: Resetea la contrasena usando el codigo OTP verificado.
     ✅ Requiere relogin obligatorio
+    ✅ CORREGIDO: Mejor manejo de errores y logs detallados
     """
     try:
         email = request.email.lower()
         code = request.code
         new_password = request.new_password
         
+        logger.info(f"🔐 [Reset] Intentando resetear contrasena para: {email}")
+        logger.info(f"🔐 [Reset] Codigo recibido: {code}")
+        
+        # 1. Verificar que existe solicitud
         if email not in reset_otp_store:
+            logger.error(f"❌ [Reset] No hay solicitud para {email}")
             raise HTTPException(status_code=400, detail="Solicitud invalida. Reinicia el proceso")
         
         otp_data = reset_otp_store[email]
+        logger.info(f"🔐 [Reset] Datos OTP encontrados: verified={otp_data.get('verified')}, user_id={otp_data.get('user_id')}")
         
+        # 2. Verificar que el OTP fue verificado
         if not otp_data.get("verified"):
+            logger.error(f"❌ [Reset] OTP no verificado para {email}")
             raise HTTPException(status_code=400, detail="Debes verificar el codigo primero")
         
+        # 3. Verificar que el codigo coincide
         if code != otp_data.get("code"):
+            logger.error(f"❌ [Reset] Codigo no coincide para {email}")
             raise HTTPException(status_code=400, detail="Token invalido")
         
+        # 4. Validar fortaleza de la nueva contraseña
         policy = await supabase_client.get_password_policy()
-        
         is_valid, errors = password_service.validate_strength(new_password, policy)
         if not is_valid:
+            logger.error(f"❌ [Reset] Contrasena no cumple requisitos: {errors}")
             raise HTTPException(status_code=400, detail={"errors": errors, "message": "La contrasena no cumple los requisitos"})
         
         user_id = otp_data.get("user_id")
+        if not user_id:
+            logger.error(f"❌ [Reset] No se encontró user_id para {email}")
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
+        logger.info(f"🔐 [Reset] User ID obtenido: {user_id}")
+        
+        # 5. Verificar que el usuario existe en la tabla profiles
+        try:
+            profile_result = supabase_client.table("profiles").select("id, email").eq("id", user_id).execute()
+            if not profile_result or len(profile_result) == 0:
+                logger.error(f"❌ [Reset] Usuario no encontrado en profiles: {user_id}")
+                raise HTTPException(status_code=404, detail="Usuario no encontrado en el sistema")
+            logger.info(f"✅ [Reset] Usuario encontrado en profiles: {profile_result[0].get('email')}")
+        except Exception as e:
+            logger.error(f"❌ [Reset] Error verificando perfil: {e}")
+            raise HTTPException(status_code=500, detail="Error al verificar el usuario")
+        
+        # 6. Actualizar contraseña en Supabase Auth
         headers = {
             "apikey": settings.supabase_key,
             "Authorization": f"Bearer {settings.supabase_service_role_key}",
             "Content-Type": "application/json"
         }
+        
+        logger.info(f"🔄 [Reset] Actualizando contraseña en Supabase Auth para user: {user_id}")
         
         async with httpx.AsyncClient() as client:
             response = await client.put(
@@ -559,24 +592,49 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
             )
             
             if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="Error al actualizar la contrasena")
+                error_detail = response.text
+                logger.error(f"❌ [Reset] Error en Supabase Auth: {response.status_code} - {error_detail}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error al actualizar la contrasena en el servidor de autenticación"
+                )
+            
+            logger.info(f"✅ [Reset] Contraseña actualizada en Supabase Auth")
         
+        # 7. Calcular fecha de expiración
         max_age_days = policy.get("max_age_days", 90)
         expires_at = (datetime.now(timezone.utc) + timedelta(days=max_age_days)).isoformat()
-        
         new_session_version = datetime.now(timezone.utc).timestamp()
         
-        await update_user_metadata(user_id, {
-            "password_changed_at": datetime.now(timezone.utc).isoformat(),
-            "password_expires_at": expires_at,
-            "password_reset_via_otp": True,
-            "session_version": new_session_version
-        })
+        # 8. Actualizar metadata del usuario en profiles
+        logger.info(f"🔄 [Reset] Actualizando metadata en profiles para user: {user_id}")
         
+        try:
+            update_result = supabase_client.table("profiles").update({
+                "password_changed_at": datetime.now(timezone.utc).isoformat(),
+                "password_expires_at": expires_at,
+                "password_reset_via_otp": True,
+                "session_version": new_session_version,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", user_id).execute()
+            
+            if update_result:
+                logger.info(f"✅ [Reset] Metadata actualizada en profiles")
+            else:
+                logger.warning(f"⚠️ [Reset] No se pudo actualizar metadata (resultado vacío)")
+        except Exception as e:
+            logger.warning(f"⚠️ [Reset] Error actualizando metadata (no crítico): {e}")
+        
+        # 9. Registrar en historial de contraseñas
         new_password_hash = password_service.hash_for_history(new_password)
         await supabase_client.record_password_history(user_id, new_password_hash)
-        await supabase_client.invalidate_all_sessions(user_id)
+        await supabase_client.cleanup_old_password_history(user_id, 20)
         
+        # 10. Invalidar todas las sesiones
+        await supabase_client.invalidate_all_sessions(user_id)
+        logger.info(f"✅ [Reset] Sesiones invalidadas")
+        
+        # 11. Registrar evento de seguridad
         await security_service.log_security_event(
             user_id=user_id,
             event_type="PASSWORD_RESET_VIA_OTP",
@@ -584,25 +642,32 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
             details={"session_version": new_session_version}
         )
         
+        # 12. Enviar email de confirmación
         user_email = email
         user_name = otp_data.get("user_name", "Usuario")
         await email_service.send_password_change_confirmation(user_email, user_name, req.client.host if req else None)
         
+        # 13. Limpiar el store
         del reset_otp_store[email]
         
-        logger.info(f"Contrasena reseteada via OTP para usuario {user_id} - session_version actualizada a {new_session_version}")
+        logger.info(f"✅✅✅ [Reset] CONTRASEÑA RESETEADA EXITOSAMENTE para usuario {user_id}")
         
         return ForgotPasswordResetResponse(
             success=True,
-            message="Contrasena actualizada correctamente. Debes iniciar sesion con tu nueva contrasena.",
+            message="Contraseña actualizada correctamente. Debes iniciar sesión con tu nueva contraseña.",
             requires_relogin=True
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error en forgot_password_reset: {e}")
-        raise HTTPException(status_code=500, detail="Error al resetear la contrasena")
+        logger.error(f"❌❌❌ [Reset] Error FATAL en forgot_password_reset: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error al actualizar la contraseña: {str(e)}"
+        )
 
 
 # ============================================

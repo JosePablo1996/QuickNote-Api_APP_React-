@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class EmailService:
     """
     Servicio de envio de emails.
+    MEJORADO: Mejores practicas anti-SPAM, contenido mas atractivo.
     """
     
     def __init__(self):
@@ -36,6 +37,7 @@ class EmailService:
         logger.info("EmailService inicializado")
         logger.info(f"   SendGrid: {'SI' if self.use_sendgrid else 'NO'}")
         logger.info(f"   SMTP: {'SI' if self.use_smtp else 'NO'}")
+        logger.info(f"   From Email: {self.sendgrid_from_email if self.use_sendgrid else self.smtp_from}")
         logger.info("=" * 50)
     
     async def send_email(
@@ -61,6 +63,7 @@ class EmailService:
             if success:
                 logger.info(f"Email enviado a {to_email} via SMTP")
                 return True
+            logger.warning("Fallo envio via SMTP")
         
         logger.warning(f"No se pudo enviar email a {to_email}. Mostrando en logs:")
         logger.info(f"[DEV] To: {to_email}")
@@ -78,7 +81,7 @@ class EmailService:
     ) -> bool:
         """Envia email usando SendGrid API."""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     "https://api.sendgrid.com/v3/mail/send",
                     headers={
@@ -92,10 +95,15 @@ class EmailService:
                         "content": [
                             {"type": "text/plain", "value": text_content},
                             {"type": "text/html", "value": html_content}
-                        ]
+                        ],
+                        "reply_to": {"email": self.sendgrid_from_email, "name": "Soporte QuickNote"}
                     }
                 )
-                return response.status_code == 202
+                if response.status_code == 202:
+                    return True
+                else:
+                    logger.error(f"SendGrid error: {response.status_code} - {response.text}")
+                    return False
         except Exception as e:
             logger.error(f"Error en SendGrid: {e}")
             return False
@@ -113,6 +121,7 @@ class EmailService:
             msg["From"] = f"{self.smtp_from_name} <{self.smtp_from}>"
             msg["To"] = to_email
             msg["Subject"] = subject
+            msg["Reply-To"] = self.smtp_from
             
             msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
             msg.attach(MIMEText(html_content, 'html', 'utf-8'))
@@ -141,28 +150,35 @@ class EmailService:
         return text.strip()
     
     # ============================================
-    # EMAILS DE AUTENTICACION
+    # EMAILS DE AUTENTICACION (MEJORADOS)
     # ============================================
     
     async def send_otp_email(self, email: str, code: str) -> bool:
         """Envia codigo OTP para autenticacion de login."""
         subject = f"Tu codigo de verificacion QuickNote: {code}"
         
+        username = email.split('@')[0]
+        
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Codigo de verificacion QuickNote</title>
     <style>
-        body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
-        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; }}
-        .header h1 {{ color: white; margin: 0; }}
-        .content {{ padding: 30px; text-align: center; }}
-        .code-box {{ background: #f8f9fa; border: 2px dashed #667eea; border-radius: 12px; padding: 20px; margin: 20px 0; }}
-        .code {{ font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 8px; }}
-        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4f4f4; padding: 20px; margin: 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: white; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1); }}
+        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 32px 24px; text-align: center; }}
+        .header h1 {{ color: white; margin: 0; font-size: 28px; font-weight: 700; }}
+        .header p {{ color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px; }}
+        .content {{ padding: 32px 28px; text-align: center; }}
+        .greeting {{ font-size: 18px; color: #333; margin-bottom: 16px; }}
+        .code-box {{ background: #f8f9fa; border: 2px dashed #667eea; border-radius: 16px; padding: 24px; margin: 24px 0; }}
+        .code {{ font-size: 48px; font-weight: bold; color: #667eea; letter-spacing: 12px; font-family: monospace; }}
+        .expiry {{ font-size: 13px; color: #888; margin-top: 16px; }}
+        .warning {{ background: #fff8e1; border-radius: 12px; padding: 14px; margin-top: 24px; font-size: 13px; color: #856404; }}
+        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #eee; }}
     </style>
 </head>
 <body>
@@ -172,15 +188,24 @@ class EmailService:
             <p>Tu codigo de verificacion</p>
         </div>
         <div class="content">
+            <div class="greeting">
+                Hola <strong>{username}</strong>,
+            </div>
             <p>Usa el siguiente codigo para completar tu autenticacion:</p>
             <div class="code-box">
                 <span class="code">{code}</span>
             </div>
-            <p>Este codigo expira en 10 minutos.</p>
-            <p>Si no solicitaste este codigo, ignora este mensaje.</p>
+            <div class="expiry">
+                Este codigo expira en <strong>10 minutos</strong>
+            </div>
+            <div class="warning">
+                Si no solicitaste este codigo, ignora este mensaje.
+                Tu cuenta permanece segura.
+            </div>
         </div>
         <div class="footer">
             <p>QuickNote - Tu espacio de notas seguro</p>
+            <p>Este es un correo automatico, por favor no responder.</p>
         </div>
     </div>
 </body>
@@ -188,11 +213,17 @@ class EmailService:
 """
         
         text_content = f"""
-Tu codigo de verificacion QuickNote es: {code}
+QuickNote - Codigo de verificacion: {code}
+
+Hola {username},
+
+Usa el siguiente codigo para completar tu autenticacion:
+
+{code}
 
 Este codigo expira en 10 minutos.
 
-Si no solicitaste este codigo, ignora este mensaje.
+Si no solicitaste este codigo, ignora este mensaje. Tu cuenta permanece segura.
 
 ---
 QuickNote - Tu espacio de notas seguro
@@ -204,22 +235,28 @@ QuickNote - Tu espacio de notas seguro
         """Envia codigo OTP para recuperacion de contrasena."""
         subject = "Recuperacion de contrasena - QuickNote"
         
+        username = email.split('@')[0]
+        
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Recuperacion de contrasena - QuickNote</title>
     <style>
-        body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
-        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
-        .header {{ background: linear-gradient(135deg, #F59E0B 0%, #DC2626 100%); padding: 30px; text-align: center; }}
-        .header h1 {{ color: white; margin: 0; }}
-        .content {{ padding: 30px; text-align: center; }}
-        .code-box {{ background: #f8f9fa; border: 2px dashed #F59E0B; border-radius: 12px; padding: 20px; margin: 20px 0; }}
-        .code {{ font-size: 48px; font-weight: bold; color: #F59E0B; letter-spacing: 8px; }}
-        .warning {{ color: #666; font-size: 14px; margin-top: 20px; }}
-        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4f4f4; padding: 20px; margin: 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: white; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1); }}
+        .header {{ background: linear-gradient(135deg, #F59E0B 0%, #DC2626 100%); padding: 32px 24px; text-align: center; }}
+        .header h1 {{ color: white; margin: 0; font-size: 28px; font-weight: 700; }}
+        .header p {{ color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px; }}
+        .content {{ padding: 32px 28px; text-align: center; }}
+        .greeting {{ font-size: 18px; color: #333; margin-bottom: 16px; }}
+        .code-box {{ background: #f8f9fa; border: 2px dashed #F59E0B; border-radius: 16px; padding: 24px; margin: 24px 0; }}
+        .code {{ font-size: 48px; font-weight: bold; color: #F59E0B; letter-spacing: 12px; font-family: monospace; }}
+        .expiry {{ font-size: 13px; color: #888; margin-top: 16px; }}
+        .warning {{ background: #fff8e1; border-radius: 12px; padding: 14px; margin-top: 24px; font-size: 13px; color: #856404; }}
+        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #eee; }}
     </style>
 </head>
 <body>
@@ -229,18 +266,24 @@ QuickNote - Tu espacio de notas seguro
             <p>Recuperacion de contrasena</p>
         </div>
         <div class="content">
+            <div class="greeting">
+                Hola <strong>{username}</strong>,
+            </div>
             <p>Hemos recibido una solicitud para restablecer tu contrasena.</p>
-            <p>Usa el siguiente codigo para continuar:</p>
             <div class="code-box">
                 <span class="code">{code}</span>
             </div>
+            <div class="expiry">
+                Este codigo expira en <strong>10 minutos</strong>
+            </div>
             <div class="warning">
-                Este codigo expira en <strong>10 minutos</strong><br>
                 Si no solicitaste este cambio, ignora este mensaje.
+                Tu contrasena permanecera segura.
             </div>
         </div>
         <div class="footer">
             <p>QuickNote - Tu espacio de notas seguro</p>
+            <p>Este es un correo automatico, por favor no responder.</p>
         </div>
     </div>
 </body>
@@ -248,7 +291,9 @@ QuickNote - Tu espacio de notas seguro
 """
         
         text_content = f"""
-Recuperacion de contrasena - QuickNote
+QuickNote - Recuperacion de contrasena
+
+Hola {username},
 
 Hemos recibido una solicitud para restablecer tu contrasena.
 
@@ -265,27 +310,34 @@ QuickNote - Tu espacio de notas seguro
         return await self.send_email(email, subject, html_content, text_content)
     
     # ============================================
-    # EMAILS DE SEGURIDAD
+    # EMAILS DE SEGURIDAD (MEJORADOS)
     # ============================================
     
     async def send_password_change_confirmation(self, email: str, name: str, ip_address: str = None) -> bool:
         """Envia confirmacion de cambio de contrasena."""
         subject = "Tu contrasena ha sido actualizada - QuickNote"
         
+        current_time = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Contrasena actualizada - QuickNote</title>
     <style>
-        body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
-        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
-        .header {{ background: linear-gradient(135deg, #10B981 0%, #059669 100%); padding: 30px; text-align: center; }}
-        .header h1 {{ color: white; margin: 0; }}
-        .content {{ padding: 30px; }}
-        .info-box {{ background: #f0fdf4; border-left: 4px solid #10B981; padding: 15px; margin: 20px 0; border-radius: 8px; }}
-        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4f4f4; padding: 20px; margin: 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: white; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1); }}
+        .header {{ background: linear-gradient(135deg, #10B981 0%, #059669 100%); padding: 32px 24px; text-align: center; }}
+        .header h1 {{ color: white; margin: 0; font-size: 28px; font-weight: 700; }}
+        .header p {{ color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px; }}
+        .content {{ padding: 32px 28px; }}
+        .greeting {{ font-size: 18px; color: #333; margin-bottom: 16px; }}
+        .info-box {{ background: #f0fdf4; border-left: 4px solid #10B981; padding: 16px; margin: 20px 0; border-radius: 12px; }}
+        .info-item {{ margin-bottom: 8px; font-size: 14px; }}
+        .warning-box {{ background: #fef2f2; border-left: 4px solid #EF4444; padding: 16px; margin: 20px 0; border-radius: 12px; }}
+        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #eee; }}
     </style>
 </head>
 <body>
@@ -295,20 +347,27 @@ QuickNote - Tu espacio de notas seguro
             <p>Confirmacion de cambio de contrasena</p>
         </div>
         <div class="content">
-            <h2>Hola {name}!</h2>
+            <div class="greeting">
+                Hola <strong>{name}</strong>!
+            </div>
             <p>Tu contrasena ha sido <strong>actualizada exitosamente</strong>.</p>
             
             <div class="info-box">
                 <strong>Detalles del cambio:</strong><br>
-                ? Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}<br>
-                ? IP: {ip_address or 'No registrada'}
+                <div class="info-item">Fecha: {current_time}</div>
+                <div class="info-item">IP: {ip_address or 'No registrada'}</div>
             </div>
             
-            <p><strong>No realizaste este cambio?</strong><br>
-            Si no fuiste tu quien cambio la contrasena, contacta inmediatamente a nuestro soporte.</p>
+            <div class="warning-box">
+                <strong>No realizaste este cambio?</strong><br>
+                Si no fuiste tu quien cambio la contrasena, contacta inmediatamente a nuestro soporte.
+            </div>
+            
+            <p>Por seguridad, todas tus sesiones activas han sido cerradas.</p>
         </div>
         <div class="footer">
             <p>QuickNote - Tu espacio de notas seguro</p>
+            <p>Necesitas ayuda? Contacta a soporte@quicknote.com</p>
         </div>
     </div>
 </body>
@@ -316,16 +375,20 @@ QuickNote - Tu espacio de notas seguro
 """
         
         text_content = f"""
+QuickNote - Confirmacion de cambio de contrasena
+
 Hola {name},
 
 Tu contrasena ha sido actualizada exitosamente.
 
 Detalles del cambio:
-- Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+- Fecha: {current_time}
 - IP: {ip_address or 'No registrada'}
 
 No realizaste este cambio?
 Si no fuiste tu, contacta inmediatamente a nuestro soporte.
+
+Por seguridad, todas tus sesiones activas han sido cerradas.
 
 ---
 QuickNote - Tu espacio de notas seguro
@@ -342,15 +405,19 @@ QuickNote - Tu espacio de notas seguro
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Advertencia de expiracion - QuickNote</title>
     <style>
-        body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
-        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
-        .header {{ background: linear-gradient(135deg, #F59E0B 0%, #DC2626 100%); padding: 30px; text-align: center; }}
-        .header h1 {{ color: white; margin: 0; }}
-        .content {{ padding: 30px; }}
-        .days {{ font-size: 48px; font-weight: bold; color: #DC2626; text-align: center; margin: 20px 0; }}
-        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4f4f4; padding: 20px; margin: 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: white; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1); }}
+        .header {{ background: linear-gradient(135deg, #F59E0B 0%, #DC2626 100%); padding: 32px 24px; text-align: center; }}
+        .header h1 {{ color: white; margin: 0; font-size: 28px; font-weight: 700; }}
+        .header p {{ color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px; }}
+        .content {{ padding: 32px 28px; text-align: center; }}
+        .greeting {{ font-size: 18px; color: #333; margin-bottom: 16px; }}
+        .days {{ font-size: 52px; font-weight: bold; color: #DC2626; text-align: center; margin: 20px 0; }}
+        .button {{ display: inline-block; background: #3B82F6; color: white; padding: 12px 28px; border-radius: 30px; text-decoration: none; font-weight: 600; margin: 16px 0; }}
+        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #eee; }}
     </style>
 </head>
 <body>
@@ -360,7 +427,9 @@ QuickNote - Tu espacio de notas seguro
             <p>Advertencia de expiracion</p>
         </div>
         <div class="content">
-            <h2>Hola {name}!</h2>
+            <div class="greeting">
+                Hola <strong>{name}</strong>,
+            </div>
             <p>Tu contrasena expirara en:</p>
             
             <div class="days">
@@ -378,11 +447,15 @@ QuickNote - Tu espacio de notas seguro
 """
         
         text_content = f"""
+QuickNote - Advertencia de expiracion de contrasena
+
 Hola {name},
 
 Tu contrasena expirara en {days_remaining} dia{'' if days_remaining == 1 else 's'}.
 
 Te recomendamos cambiar tu contrasena lo antes posible para mantener la seguridad de tu cuenta.
+
+Para cambiar tu contrasena, ve a Configuracion > Seguridad en la aplicacion.
 
 ---
 QuickNote - Tu espacio de notas seguro
@@ -400,26 +473,31 @@ QuickNote - Tu espacio de notas seguro
         }
         
         title = alert_titles.get(alert_type, "Alerta de seguridad")
-        subject = f"Alerta de seguridad - QuickNote"
+        subject = "Alerta de seguridad - QuickNote"
         
         details_text = ""
         for key, value in details.items():
-            details_text += f"? {key}: {value}<br>"
+            details_text += f"<div class='info-item'>? {key}: {value}</div>"
         
         html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alerta de seguridad - QuickNote</title>
     <style>
-        body {{ font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }}
-        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; }}
-        .header {{ background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%); padding: 30px; text-align: center; }}
-        .header h1 {{ color: white; margin: 0; }}
-        .content {{ padding: 30px; }}
-        .alert-box {{ background: #fef2f2; border-left: 4px solid #EF4444; padding: 15px; margin: 20px 0; border-radius: 8px; }}
-        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4f4f4; padding: 20px; margin: 0; }}
+        .container {{ max-width: 560px; margin: 0 auto; background: white; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1); }}
+        .header {{ background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%); padding: 32px 24px; text-align: center; }}
+        .header h1 {{ color: white; margin: 0; font-size: 28px; font-weight: 700; }}
+        .header p {{ color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px; }}
+        .content {{ padding: 32px 28px; }}
+        .greeting {{ font-size: 18px; color: #333; margin-bottom: 16px; }}
+        .alert-box {{ background: #fef2f2; border-left: 4px solid #EF4444; padding: 16px; margin: 20px 0; border-radius: 12px; }}
+        .info-item {{ margin-bottom: 8px; font-size: 14px; }}
+        .warning-box {{ background: #fff8e1; padding: 16px; margin: 20px 0; border-radius: 12px; }}
+        .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #eee; }}
     </style>
 </head>
 <body>
@@ -429,19 +507,25 @@ QuickNote - Tu espacio de notas seguro
             <p>Alerta de seguridad</p>
         </div>
         <div class="content">
-            <h2>Hola {name}!</h2>
+            <div class="greeting">
+                Hola <strong>{name}</strong>,
+            </div>
             <p>Hemos detectado la siguiente actividad en tu cuenta:</p>
             
             <div class="alert-box">
                 <strong>{title}</strong><br>
                 {details_text}
+                <div class="info-item">Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</div>
             </div>
             
-            <p><strong>No reconoces esta actividad?</strong><br>
-            Si no fuiste tu, recomendamos cambiar tu contrasena inmediatamente.</p>
+            <div class="warning-box">
+                <strong>No reconoces esta actividad?</strong><br>
+                Si no fuiste tu, te recomendamos cambiar tu contrasena inmediatamente.
+            </div>
         </div>
         <div class="footer">
             <p>QuickNote - Tu espacio de notas seguro</p>
+            <p>Necesitas ayuda? Contacta a soporte@quicknote.com</p>
         </div>
     </div>
 </body>
@@ -449,12 +533,17 @@ QuickNote - Tu espacio de notas seguro
 """
         
         text_content = f"""
+QuickNote - Alerta de seguridad
+
 Hola {name},
 
-Alerta de seguridad: {title}
+Hemos detectado la siguiente actividad en tu cuenta:
+
+{title}
 
 Detalles:
 {self._format_details_text(details)}
+Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
 
 No reconoces esta actividad?
 Si no fuiste tu, te recomendamos cambiar tu contrasena inmediatamente.

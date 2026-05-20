@@ -522,7 +522,7 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
     """
     Paso 4: Resetea la contrasena usando el codigo OTP verificado.
     ✅ Requiere relogin obligatorio
-    ✅ CORREGIDO: Mejor manejo de errores y logs detallados
+    ✅ CORREGIDO: Usar with_service_role() para acceder a profiles
     """
     try:
         email = request.email.lower()
@@ -564,16 +564,20 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
         
         logger.info(f"🔐 [Reset] User ID obtenido: {user_id}")
         
-        # 5. Verificar que el usuario existe en la tabla profiles
+        # ✅ 5. CORREGIDO: Verificar que el usuario existe en la tabla profiles
         try:
-            profile_result = supabase_client.table("profiles").select("id, email").eq("id", user_id).execute()
+            # Usar el método with_service_role() para obtener un cliente con permisos
+            client = supabase_client.with_service_role()
+            profile_result = client.table("profiles").select("id, email").eq("id", user_id).execute()
+            
             if not profile_result or len(profile_result) == 0:
                 logger.error(f"❌ [Reset] Usuario no encontrado en profiles: {user_id}")
                 raise HTTPException(status_code=404, detail="Usuario no encontrado en el sistema")
+            
             logger.info(f"✅ [Reset] Usuario encontrado en profiles: {profile_result[0].get('email')}")
         except Exception as e:
             logger.error(f"❌ [Reset] Error verificando perfil: {e}")
-            raise HTTPException(status_code=500, detail="Error al verificar el usuario")
+            raise HTTPException(status_code=500, detail=f"Error al verificar el usuario: {str(e)}")
         
         # 6. Actualizar contraseña en Supabase Auth
         headers = {
@@ -584,8 +588,8 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
         
         logger.info(f"🔄 [Reset] Actualizando contraseña en Supabase Auth para user: {user_id}")
         
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.put(
                 f"{settings.supabase_url}/auth/v1/admin/users/{user_id}",
                 headers=headers,
                 json={"password": new_password}
@@ -610,7 +614,8 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
         logger.info(f"🔄 [Reset] Actualizando metadata en profiles para user: {user_id}")
         
         try:
-            update_result = supabase_client.table("profiles").update({
+            client = supabase_client.with_service_role()
+            update_result = client.table("profiles").update({
                 "password_changed_at": datetime.now(timezone.utc).isoformat(),
                 "password_expires_at": expires_at,
                 "password_reset_via_otp": True,

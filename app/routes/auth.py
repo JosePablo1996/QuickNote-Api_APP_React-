@@ -420,7 +420,7 @@ async def change_password(
 
 
 # ============================================
-# ENDPOINTS DE RECUPERACION DE CONTRASENA (CON requires_relogin)
+# ENDPOINTS DE RECUPERACION DE CONTRASENA
 # ============================================
 
 @router.post("/forgot-password/send-otp", response_model=ForgotPasswordResponse)
@@ -521,8 +521,9 @@ async def forgot_password_verify_otp(request: ForgotPasswordVerifyRequest, req: 
 async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Request = None):
     """
     Paso 4: Resetea la contrasena usando el codigo OTP verificado.
-    ✅ Requiere relogin obligatorio
-    ✅ CORREGIDO: Usar with_service_role() para acceder a profiles
+    ✅ REQUIERE relogin obligatorio
+    ✅ CORREGIDO: Manejo de perfiles con with_service_role()
+    ✅ CORREGIDO: Mejor logging y manejo de errores
     """
     try:
         email = request.email.lower()
@@ -574,9 +575,19 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
                 logger.error(f"❌ [Reset] Usuario no encontrado en profiles: {user_id}")
                 raise HTTPException(status_code=404, detail="Usuario no encontrado en el sistema")
             
-            logger.info(f"✅ [Reset] Usuario encontrado en profiles: {profile_result[0].get('email')}")
+            # Acceder correctamente a los datos
+            profile_data = profile_result[0] if profile_result else None
+            if profile_data and isinstance(profile_data, dict):
+                logger.info(f"✅ [Reset] Usuario encontrado en profiles: {profile_data.get('email')}")
+            else:
+                logger.warning(f"⚠️ [Reset] Datos de perfil inesperados: {profile_result}")
+                
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"❌ [Reset] Error verificando perfil: {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Error al verificar el usuario: {str(e)}")
         
         # 6. Actualizar contraseña en Supabase Auth
@@ -598,10 +609,18 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
             if response.status_code != 200:
                 error_detail = response.text
                 logger.error(f"❌ [Reset] Error en Supabase Auth: {response.status_code} - {error_detail}")
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Error al actualizar la contrasena en el servidor de autenticación"
-                )
+                
+                # Manejar error específico de permisos
+                if response.status_code == 403:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="Error de permisos en el servidor de autenticación. Contacta al administrador."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="Error al actualizar la contrasena en el servidor de autenticación"
+                    )
             
             logger.info(f"✅ [Reset] Contraseña actualizada en Supabase Auth")
         

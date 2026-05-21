@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 class SupabaseClient:
     """
     Cliente personalizado para Supabase.
+    CORREGIDO: Método with_service_role() ahora funciona correctamente.
     """
     
     def __init__(self):
@@ -26,6 +27,7 @@ class SupabaseClient:
         logger.info("=" * 50)
         logger.info("Cliente Supabase manual inicializado")
         logger.info(f"URL: {self.url}")
+        logger.info(f"Service Role Key configurada: {'✅ SI' if self.service_role_key else '❌ NO'}")
         logger.info("=" * 50)
     
     def with_token(self, token: str):
@@ -37,10 +39,13 @@ class SupabaseClient:
     
     def with_service_role(self):
         """Crear una instancia con service role key (bypass RLS)."""
-        headers = self.base_headers.copy()
-        headers["apikey"] = self.service_role_key
-        headers["Authorization"] = f"Bearer {self.service_role_key}"
-        headers["Prefer"] = "return=representation"
+        headers = {
+            "apikey": self.service_role_key,
+            "Authorization": f"Bearer {self.service_role_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
+        logger.debug("Usando service_role_key para operación administrativa")
         return SupabaseClientWithToken(self, headers, self.service_role_key)
     
     def get_table(self, table_name: str):
@@ -201,7 +206,7 @@ class SupabaseClient:
             return False
     
     # ============================================
-    # METODOS DE USUARIO (CORREGIDOS CON MAPEO DE CAMPOS)
+    # METODOS DE USUARIO
     # ============================================
     
     async def get_user_metadata(self, user_id: str) -> Optional[Dict]:
@@ -214,12 +219,11 @@ class SupabaseClient:
             result = client.table("profiles").select("*").eq("id", user_id).execute()
             if result and len(result) > 0:
                 user_data = result[0]
-                # Mapear nombres de vuelta para consistencia con el backend
                 return {
                     "id": user_data.get("id"),
                     "full_name": user_data.get("full_name"),
-                    "avatar": user_data.get("avatar_url"),      # avatar_url -> avatar
-                    "banner": user_data.get("banner_url"),      # banner_url -> banner
+                    "avatar": user_data.get("avatar_url"),
+                    "banner": user_data.get("banner_url"),
                     "email": user_data.get("email"),
                     "session_version": user_data.get("session_version"),
                     "password_changed_at": user_data.get("password_changed_at"),
@@ -233,14 +237,10 @@ class SupabaseClient:
             return None
     
     async def update_user_metadata(self, user_id: str, metadata: Dict) -> bool:
-        """
-        Actualiza metadata de un usuario en la tabla profiles.
-        Mapea los nombres de campos del backend a los nombres reales en la tabla.
-        """
+        """Actualiza metadata de un usuario en la tabla profiles."""
         try:
             client = self.with_service_role()
             
-            # Mapeo de campos del backend a nombres reales en la tabla
             field_mapping = {
                 "avatar": "avatar_url",
                 "banner": "banner_url",
@@ -253,38 +253,26 @@ class SupabaseClient:
                 "bio": "bio"
             }
             
-            # Campos permitidos en la tabla profiles (usando nombres reales)
             allowed_fields = [
-                "avatar_url",
-                "banner_url", 
-                "full_name",
-                "session_version",
-                "password_changed_at",
-                "password_expires_at",
-                "password_reset_via_otp",
-                "username",
-                "bio"
+                "avatar_url", "banner_url", "full_name", "session_version",
+                "password_changed_at", "password_expires_at", "password_reset_via_otp",
+                "username", "bio"
             ]
             
             logger.info(f"Actualizando metadata para usuario {user_id}: {metadata}")
             
-            # Convertir nombres de campos y filtrar
             filtered_metadata = {}
             for key, value in metadata.items():
-                # Mapear el nombre del campo si es necesario
                 db_field = field_mapping.get(key, key)
                 
                 if db_field in allowed_fields and value is not None:
-                    # Asegurar tipos correctos
                     if db_field == "session_version":
-                        # Convertir a entero
                         try:
                             filtered_metadata[db_field] = int(float(value))
                         except (ValueError, TypeError):
                             filtered_metadata[db_field] = 0
                         logger.info(f"  Campo mapeado: {key} -> {db_field} = {filtered_metadata[db_field]}")
                     elif db_field in ["password_changed_at", "password_expires_at"]:
-                        # Mantener formato ISO
                         filtered_metadata[db_field] = value
                         logger.info(f"  Campo mapeado: {key} -> {db_field} = {value}")
                     else:
@@ -299,12 +287,10 @@ class SupabaseClient:
                 logger.warning(f"No hay campos validos para actualizar para usuario {user_id}")
                 return True
             
-            # Verificar si existe el perfil
             existing = client.table("profiles").select("*").eq("id", user_id).execute()
             logger.info(f"Perfil existe: {existing is not None and len(existing) > 0}")
             
             if existing and len(existing) > 0:
-                # Actualizar perfil existente (sin updated_at porque tiene default)
                 result = client.table("profiles")\
                     .update(filtered_metadata)\
                     .eq("id", user_id)\
@@ -317,11 +303,7 @@ class SupabaseClient:
                     logger.error(f"Error actualizando perfil para usuario {user_id} - resultado vacio")
                     return False
             else:
-                # Crear nuevo perfil
-                insert_data = {
-                    "id": user_id,
-                    **filtered_metadata
-                }
+                insert_data = {"id": user_id, **filtered_metadata}
                 result = client.table("profiles").insert(insert_data).execute()
                 
                 if result:
@@ -352,7 +334,9 @@ class SupabaseClientWithToken:
 
 
 class TableQueryWithToken:
-    """Constructor de consultas para una tabla especifica."""
+    """Constructor de consultas para una tabla especifica.
+    CORREGIDO: Ahora maneja correctamente las consultas con parámetros.
+    """
     
     def __init__(self, client: SupabaseClientWithToken, table_name: str):
         self.client = client
@@ -361,8 +345,10 @@ class TableQueryWithToken:
         self.params: Dict[str, str] = {}
         self.data: Optional[Dict] = None
         self._method: str = 'GET'
+        self._select_columns: str = '*'
     
     def select(self, columns: str = "*"):
+        self._select_columns = columns
         self.params["select"] = columns
         self._method = 'GET'
         return self
@@ -405,12 +391,10 @@ class TableQueryWithToken:
         return self
     
     def is_null(self, column: str):
-        """Filtro IS NULL"""
         self.params[f"{column}"] = "is.null"
         return self
     
     def is_not_null(self, column: str):
-        """Filtro IS NOT NULL"""
         self.params[f"{column}"] = "not.is.null"
         return self
     
@@ -445,32 +429,44 @@ class TableQueryWithToken:
         try:
             method = self._method or 'GET'
             
+            # Construir URL con query params
+            url = self.base_url
+            if self.params:
+                query_params = []
+                for key, value in self.params.items():
+                    query_params.append(f"{key}={value}")
+                if query_params:
+                    url = f"{self.base_url}?{'&'.join(query_params)}"
+            
+            logger.debug(f"Ejecutando {method} en {url}")
+            
             if method in ('POST', 'UPSERT'):
                 response = self.client.client.post(
-                    self.base_url,
+                    url,
                     headers=self.client.headers,
-                    params=self.params,
                     json=self.data
                 )
             elif method == 'PATCH':
                 response = self.client.client.patch(
-                    self.base_url,
+                    url,
                     headers=self.client.headers,
-                    params=self.params,
                     json=self.data
                 )
             elif method == 'DELETE':
                 response = self.client.client.delete(
-                    self.base_url,
-                    headers=self.client.headers,
-                    params=self.params
+                    url,
+                    headers=self.client.headers
                 )
-            else:
+            else:  # GET
                 response = self.client.client.get(
-                    self.base_url,
-                    headers=self.client.headers,
-                    params=self.params
+                    url,
+                    headers=self.client.headers
                 )
+            
+            logger.debug(f"Response status: {response.status_code}")
+            
+            if response.status_code == 204:  # No content
+                return []
             
             response.raise_for_status()
             
@@ -481,7 +477,7 @@ class TableQueryWithToken:
             return result if isinstance(result, list) else [result]
             
         except httpx.HTTPStatusError as e:
-            logger.error(f"Error HTTP: {e.response.status_code}")
+            logger.error(f"Error HTTP: {e.response.status_code} - {e.response.text}")
             raise
         except Exception as e:
             logger.error(f"Error inesperado: {str(e)}")

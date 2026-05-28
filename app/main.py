@@ -30,13 +30,16 @@ app = FastAPI(
 )
 
 # ============================================
-# CONFIGURACION DE CORS (ACTUALIZADA)
+# CONFIGURACION DE CORS (CORREGIDA)
 # ============================================
 
 logger.info("Configurando CORS...")
 
+# ✅ LISTA COMPLETA Y CORREGIDA DE ORIGENES PERMITIDOS
 origins = [
-    # Desarrollo local - Frontend Vite/React
+    # ==========================================
+    # DESARROLLO LOCAL
+    # ==========================================
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
@@ -44,18 +47,27 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://127.0.0.1:3000",
-    # Produccion - Frontend en Vercel
+    
+    # ==========================================
+    # PRODUCCION - FRONTEND EN VERCEL
+    # ==========================================
     "https://quicknote-web-app.vercel.app",
     "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    # ✅ NUEVA: Produccion - Frontend en Render (tu servicio actual)
+    
+    # ==========================================
+    # ✅ CORREGIDO: PRODUCCION - FRONTEND EN RENDER
+    # ==========================================
     "https://quicknote-web-app.onrender.com",
-    # Produccion - Backend en Render
+    
+    # ==========================================
+    # PRODUCCION - BACKEND EN RENDER (para auto-solicitudes)
+    # ==========================================
     "https://quicknote-api-app-react.onrender.com",
 ]
 
-logger.info(f"Origenes permitidos: {len(origins)}")
+logger.info(f"✅ Origenes CORS permitidos ({len(origins)}):")
 for origin in origins:
-    logger.info(f"  - {origin}")
+    logger.info(f"   - {origin}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -96,6 +108,11 @@ async def log_requests(request: Request, call_next):
     
     if origin:
         logger.info(f"Origin: {origin}")
+        # Verificar si el origen está permitido
+        if origin in origins:
+            logger.info(f"✅ Origin permitido por CORS")
+        else:
+            logger.warning(f"⚠️ Origin NO permitido por CORS: {origin}")
     
     response = await call_next(request)
     logger.info(f"Response status: {response.status_code}")
@@ -198,6 +215,7 @@ async def api_info():
         "description": "API para gestion de notas con autenticacion biometrica, OTP, 2FA, Backup en la Nube y Seguridad Avanzada",
         "environment": settings.environment,
         "cors_origins": len(origins),
+        "cors_allowed_origins": origins,
         "endpoints_disponibles": [
             "/docs - Documentacion Swagger",
             "/redoc - Documentacion ReDoc",
@@ -283,6 +301,11 @@ async def startup_event():
     logger.info("   - /api/v1/auth/password-policy - Politica de contrasenas")
     logger.info("   - /api/v1/auth/forgot-password/* - Recuperacion por OTP")
     logger.info("=" * 60)
+    
+    # Log adicional de CORS para verificar
+    logger.info("📋 ORIGENES CORS PERMITIDOS:")
+    for origin in origins:
+        logger.info(f"   ✅ {origin}")
 
 @app.on_event("shutdown")
 async def shutdown_event():

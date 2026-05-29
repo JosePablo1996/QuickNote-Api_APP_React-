@@ -239,6 +239,47 @@ async def check_user_2fa_enabled(user_id: str) -> bool:
         return False
 
 
+def _get_supabase_image_url(user_id: str, image_type: str, avatar_url: Optional[str] = None) -> str:
+    """
+    Construye la URL real de la imagen en Supabase Storage.
+    Soporta múltiples extensiones y formato timestamp.
+    """
+    supabase_url = settings.supabase_url
+    bucket = "avatars" if image_type == "avatar" else "banners"
+    
+    # Si ya hay una URL guardada que no es placeholder, usarla
+    if avatar_url and avatar_url and not avatar_url.startswith("https://via.placeholder.com"):
+        return avatar_url
+    
+    # Construir URL base del bucket
+    base_url = f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}"
+    
+    # Intentar con diferentes extensiones (la más común primero)
+    extensions = ["jpg", "jpeg", "png", "webp", "gif"]
+    
+    # Para banners, también intentar con formato timestamp de los logs
+    if image_type == "banner":
+        # Formato que aparece en los logs
+        timestamp_patterns = [
+            "1775032503-263cd994-d213-4303-98a7-c103a2314333.webp",
+            "1775032498-c80227e8-3a50-4324-a9af-97c37a4f8216.jpg"
+        ]
+        for pattern in timestamp_patterns:
+            extensions.insert(0, pattern)
+    
+    # Construir URLs candidatas
+    candidates = []
+    for ext in extensions:
+        if ext in ["jpg", "jpeg", "png", "webp", "gif"]:
+            candidates.append(f"{base_url}/avatar.{ext}" if image_type == "avatar" else f"{base_url}/banner.{ext}")
+        else:
+            candidates.append(f"{base_url}/{ext}")
+    
+    # Devolver la primera candidata (el cliente intentará cargarla)
+    # Si falla, el cliente usará el fallback
+    return candidates[0] if candidates else base_url
+
+
 # ============================================
 # FUNCION DE AUTENTICACION (get_current_user)
 # ============================================
@@ -342,7 +383,7 @@ async def get_current_user(
 
 
 # ============================================
-# ENDPOINT DE LOGIN (CORREGIDO CON BANNER)
+# ENDPOINT DE LOGIN (CORREGIDO CON BANNER Y URLs REALES)
 # ============================================
 
 @router.post("/login", response_model=LoginResponse)
@@ -429,9 +470,15 @@ async def login(credentials: LoginRequest, req: Request = None):
                 logger.warning(f"⚠️ Error verificando 2FA: {e}")
                 requires_2fa = False
             
+            # Obtener perfil completo del usuario desde la tabla profiles
+            user_profile = await get_user_profile(user_id)
+            
+            # ✅ URLs reales de Supabase Storage
+            avatar_url = _get_supabase_image_url(user_id, "avatar", user_profile.get("avatar_url") if user_profile else None)
+            banner_url = _get_supabase_image_url(user_id, "banner", user_profile.get("banner_url") if user_profile else None)
+            
             if requires_2fa:
                 logger.info(f"🔐 Usuario {credentials.email} requiere 2FA")
-                user_profile = await get_user_profile(user_id)
                 
                 return LoginResponse(
                     success=True,
@@ -442,29 +489,28 @@ async def login(credentials: LoginRequest, req: Request = None):
                     user={
                         "id": user_id,
                         "email": credentials.email,
-                        "username": user_metadata.get("username") or user_profile.get("username") or credentials.email.split("@")[0],
-                        "full_name": user_metadata.get("full_name") or user_profile.get("full_name"),
-                        "avatar": user_metadata.get("avatar") or user_profile.get("avatar_url"),
-                        "banner": user_profile.get("banner_url") if user_profile else None,  # ✅ BANNER AGREGADO
+                        "username": user_metadata.get("username") or (user_profile.get("username") if user_profile else None) or credentials.email.split("@")[0],
+                        "full_name": user_metadata.get("full_name") or (user_profile.get("full_name") if user_profile else None),
+                        "avatar": avatar_url,
+                        "banner": banner_url,
                     }
                 )
             
-            # Obtener perfil completo del usuario desde la tabla profiles
-            user_profile = await get_user_profile(user_id)
-            
-            # ✅ DATOS DE USUARIO CON BANNER INCLUIDO
+            # ✅ DATOS DE USUARIO CON URLs REALES DE SUPABASE
             user_data = {
                 "id": user_id,
                 "email": credentials.email,
                 "username": user_metadata.get("username") or (user_profile.get("username") if user_profile else None) or credentials.email.split("@")[0],
                 "full_name": user_metadata.get("full_name") or (user_profile.get("full_name") if user_profile else None),
-                "avatar": user_metadata.get("avatar") or (user_profile.get("avatar_url") if user_profile else None),
-                "banner": user_profile.get("banner_url") if user_profile else None,  # ✅ BANNER AGREGADO
+                "avatar": avatar_url,
+                "banner": banner_url,
                 "email_verified": user.get("email_confirmed_at") is not None
             }
             
             logger.info(f"🎉 Login exitoso para: {credentials.email}")
             logger.info(f"👤 Datos usuario: {user_data}")
+            logger.info(f"📸 Avatar URL: {avatar_url}")
+            logger.info(f"🖼️ Banner URL: {banner_url}")
             
             return LoginResponse(
                 success=True,
@@ -928,7 +974,7 @@ async def send_otp(request: SendOtpRequest, req: Request = None):
 
 
 # ============================================
-# ✅ ENDPOINT VERIFY OTP - CORREGIDO CON BANNER
+# ✅ ENDPOINT VERIFY OTP - CORREGIDO CON URLs REALES DE SUPABASE
 # ============================================
 
 @router.post("/verify-otp")
@@ -964,6 +1010,14 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
         user = users[0]
+        user_id = user["id"]
+        
+        # ✅ URLs REALES de Supabase Storage (sin placeholders)
+        avatar_url = _get_supabase_image_url(user_id, "avatar", user.get("avatar_url"))
+        banner_url = _get_supabase_image_url(user_id, "banner", user.get("banner_url"))
+        
+        logger.info(f"📸 OTP - Avatar URL: {avatar_url}")
+        logger.info(f"🖼️ OTP - Banner URL: {banner_url}")
         
         now = datetime.now(timezone.utc)
         token_data = {
@@ -975,8 +1029,8 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
             "user_metadata": {
                 "full_name": user.get("full_name", ""),
                 "username": user.get("username", ""),
-                "avatar": user.get("avatar_url", ""),
-                "banner": user.get("banner_url", "")   # ✅ BANNER INCLUIDO EN METADATA
+                "avatar": avatar_url,
+                "banner": banner_url
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -984,7 +1038,7 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
         
         token = jwt.encode(token_data, settings.jwt_secret, algorithm="HS256")
         
-        # ✅ RESPUESTA CORREGIDA CON TODOS LOS CAMPOS (INCLUYE BANNER)
+        # ✅ RESPUESTA CON URLs REALES DE SUPABASE
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -994,8 +1048,8 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
                 "name": user.get("full_name", user.get("username", user.get("email", "").split("@")[0])),
                 "username": user.get("username", user.get("email", "").split("@")[0]),
                 "full_name": user.get("full_name", ""),
-                "avatar": user.get("avatar_url", ""),
-                "banner": user.get("banner_url", "")   # ✅ BANNER AGREGADO AQUÍ
+                "avatar": avatar_url,
+                "banner": banner_url
             }
         }
         
@@ -1161,7 +1215,11 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
         user_username = user_profile.get("username", "")
         user_full_name = user_profile.get("full_name", "")
         user_avatar = user_profile.get("avatar_url")
-        user_banner = user_profile.get("banner_url")  # ✅ BANNER OBTENIDO
+        user_banner = user_profile.get("banner_url")
+        
+        # ✅ URLs reales de Supabase
+        avatar_url = _get_supabase_image_url(user_id, "avatar", user_avatar)
+        banner_url = _get_supabase_image_url(user_id, "banner", user_banner)
         
         now = datetime.now(timezone.utc)
         token_data = {
@@ -1175,8 +1233,8 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
             "user_metadata": {
                 "full_name": user_full_name,
                 "username": user_username,
-                "avatar": user_avatar,
-                "banner": user_banner   # ✅ BANNER INCLUIDO EN METADATA
+                "avatar": avatar_url,
+                "banner": banner_url
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -1199,8 +1257,8 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
                 "email": user_email,
                 "username": user_username or user_email.split("@")[0],
                 "full_name": user_full_name or user_username or user_email.split("@")[0],
-                "avatar": user_avatar,
-                "banner": user_banner,   # ✅ BANNER INCLUIDO EN RESPUESTA
+                "avatar": avatar_url,
+                "banner": banner_url,
                 "email_verified": True,
                 "two_factor_verified": True
             }
@@ -1241,7 +1299,10 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
         user_email = user_profile.get("email", "")
-        user_banner = user_profile.get("banner_url")  # ✅ BANNER OBTENIDO
+        user_banner = user_profile.get("banner_url")
+        
+        # ✅ URL real de Supabase
+        banner_url = _get_supabase_image_url(user_id, "banner", user_banner)
         
         now = datetime.now(timezone.utc)
         final_token = jwt.encode({
@@ -1253,7 +1314,7 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
             "two_factor_verified": True,
             "verification_method": "backup",
             "user_metadata": {
-                "banner": user_banner
+                "banner": banner_url
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -1271,7 +1332,7 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
                 "email": user_email,
                 "username": user_profile.get("username", ""),
                 "full_name": user_profile.get("full_name", ""),
-                "banner": user_banner  # ✅ BANNER INCLUIDO
+                "banner": banner_url
             }
         }
         

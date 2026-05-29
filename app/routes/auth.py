@@ -309,7 +309,7 @@ async def get_current_user(
         
         # Verificar expiracion de contrasena
         try:
-            is_expired, days_remaining = await is_password_expired(user_id)
+            is_expired, _ = await is_password_expired(user_id)
             if is_expired:
                 logger.warning(f"Contrasena expirada para usuario {user_id}")
                 raise HTTPException(
@@ -342,7 +342,7 @@ async def get_current_user(
 
 
 # ============================================
-# ENDPOINT DE LOGIN (CORREGIDO)
+# ENDPOINT DE LOGIN (CORREGIDO CON BANNER)
 # ============================================
 
 @router.post("/login", response_model=LoginResponse)
@@ -367,7 +367,6 @@ async def login(credentials: LoginRequest, req: Request = None):
             
             logger.info(f"📡 Supabase Auth response status: {auth_response.status_code}")
             
-            # ✅ CORREGIDO: Mejor manejo de errores de autenticación
             if auth_response.status_code != 200:
                 error_text = auth_response.text
                 logger.warning(f"❌ Auth falló: {auth_response.status_code} - {error_text}")
@@ -396,7 +395,6 @@ async def login(credentials: LoginRequest, req: Request = None):
                 logger.error("❌ No se pudo obtener user_id de la respuesta")
                 raise HTTPException(status_code=401, detail="No se pudo obtener información del usuario")
             
-            # ✅ CORREGIDO: Manejo seguro de user_metadata (puede ser None)
             user_metadata = user.get("user_metadata")
             if user_metadata is None:
                 user_metadata = {}
@@ -404,7 +402,7 @@ async def login(credentials: LoginRequest, req: Request = None):
             logger.info(f"✅ Usuario autenticado: {user_id}")
             logger.info(f"📧 Email: {credentials.email}")
             
-            # ✅ Verificar expiración de contraseña (con manejo de errores)
+            # Verificar expiración de contraseña
             try:
                 is_expired, _ = await is_password_expired(user_id)
                 if is_expired:
@@ -422,7 +420,7 @@ async def login(credentials: LoginRequest, req: Request = None):
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo verificar expiración: {e}")
             
-            # ✅ Verificar 2FA (con manejo de errores)
+            # Verificar 2FA
             requires_2fa = False
             try:
                 requires_2fa = await check_user_2fa_enabled(user_id)
@@ -433,8 +431,6 @@ async def login(credentials: LoginRequest, req: Request = None):
             
             if requires_2fa:
                 logger.info(f"🔐 Usuario {credentials.email} requiere 2FA")
-                
-                # Obtener perfil del usuario para datos adicionales
                 user_profile = await get_user_profile(user_id)
                 
                 return LoginResponse(
@@ -448,20 +444,22 @@ async def login(credentials: LoginRequest, req: Request = None):
                         "email": credentials.email,
                         "username": user_metadata.get("username") or user_profile.get("username") or credentials.email.split("@")[0],
                         "full_name": user_metadata.get("full_name") or user_profile.get("full_name"),
-                        "avatar": user_metadata.get("avatar") or user_profile.get("avatar_url")
+                        "avatar": user_metadata.get("avatar") or user_profile.get("avatar_url"),
+                        "banner": user_profile.get("banner_url") if user_profile else None,  # ✅ BANNER AGREGADO
                     }
                 )
             
-            # ✅ Obtener perfil completo del usuario desde la tabla profiles
+            # Obtener perfil completo del usuario desde la tabla profiles
             user_profile = await get_user_profile(user_id)
             
-            # ✅ CORREGIDO: user_data con campos consistentes
+            # ✅ DATOS DE USUARIO CON BANNER INCLUIDO
             user_data = {
                 "id": user_id,
                 "email": credentials.email,
                 "username": user_metadata.get("username") or (user_profile.get("username") if user_profile else None) or credentials.email.split("@")[0],
                 "full_name": user_metadata.get("full_name") or (user_profile.get("full_name") if user_profile else None),
                 "avatar": user_metadata.get("avatar") or (user_profile.get("avatar_url") if user_profile else None),
+                "banner": user_profile.get("banner_url") if user_profile else None,  # ✅ BANNER AGREGADO
                 "email_verified": user.get("email_confirmed_at") is not None
             }
             
@@ -564,10 +562,8 @@ async def change_password(
         await supabase_client.record_password_history(user_id, new_password_hash)
         await supabase_client.cleanup_old_password_history(user_id, 20)
         
-        # Invalidar todas las sesiones
         await supabase_client.invalidate_all_sessions(user_id)
         
-        # Registrar evento de seguridad
         await security_service.log_security_event(
             user_id=user_id,
             event_type=SecurityEventType.PASSWORD_CHANGED,
@@ -575,7 +571,6 @@ async def change_password(
             details={"reason": "password_changed", "force_logout": True, "session_version": new_session_version}
         )
         
-        # Enviar email de confirmacion
         user_email = current_user.get("email") or user.get("email")
         if user_email:
             user_name = user.get("user_metadata", {}).get("full_name", "Usuario")
@@ -729,7 +724,6 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
             logger.error(f"❌ [Reset] No se encontró user_id para {email}")
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
-        # Actualizar contraseña en Supabase Auth
         headers = {
             "apikey": settings.supabase_key,
             "Authorization": f"Bearer {settings.supabase_service_role_key}",
@@ -764,7 +758,6 @@ async def forgot_password_reset(request: ForgotPasswordResetRequest, req: Reques
         expires_at = (datetime.now(timezone.utc) + timedelta(days=max_age_days)).isoformat()
         new_session_version = datetime.now(timezone.utc).timestamp()
         
-        # Actualizar metadata del usuario
         await update_user_metadata(user_id, {
             "password_changed_at": datetime.now(timezone.utc).isoformat(),
             "password_expires_at": expires_at,
@@ -934,6 +927,10 @@ async def send_otp(request: SendOtpRequest, req: Request = None):
         raise HTTPException(status_code=500, detail="Error al enviar el codigo")
 
 
+# ============================================
+# ✅ ENDPOINT VERIFY OTP - CORREGIDO CON BANNER
+# ============================================
+
 @router.post("/verify-otp")
 async def verify_otp(request: VerifyOtpRequest, req: Request = None):
     """Verifica el codigo OTP y devuelve un token JWT."""
@@ -976,7 +973,10 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
             "aud": "authenticated",
             "role": "authenticated",
             "user_metadata": {
-                "full_name": user.get("full_name", "")
+                "full_name": user.get("full_name", ""),
+                "username": user.get("username", ""),
+                "avatar": user.get("avatar_url", ""),
+                "banner": user.get("banner_url", "")   # ✅ BANNER INCLUIDO EN METADATA
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -984,13 +984,18 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
         
         token = jwt.encode(token_data, settings.jwt_secret, algorithm="HS256")
         
+        # ✅ RESPUESTA CORREGIDA CON TODOS LOS CAMPOS (INCLUYE BANNER)
         return {
             "access_token": token,
             "token_type": "bearer",
             "user": {
                 "id": user["id"],
                 "email": user["email"],
-                "name": user.get("full_name", user.get("email", "").split("@")[0])
+                "name": user.get("full_name", user.get("username", user.get("email", "").split("@")[0])),
+                "username": user.get("username", user.get("email", "").split("@")[0]),
+                "full_name": user.get("full_name", ""),
+                "avatar": user.get("avatar_url", ""),
+                "banner": user.get("banner_url", "")   # ✅ BANNER AGREGADO AQUÍ
             }
         }
         
@@ -1156,6 +1161,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
         user_username = user_profile.get("username", "")
         user_full_name = user_profile.get("full_name", "")
         user_avatar = user_profile.get("avatar_url")
+        user_banner = user_profile.get("banner_url")  # ✅ BANNER OBTENIDO
         
         now = datetime.now(timezone.utc)
         token_data = {
@@ -1168,7 +1174,9 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
             "verification_method": verification_method,
             "user_metadata": {
                 "full_name": user_full_name,
-                "username": user_username
+                "username": user_username,
+                "avatar": user_avatar,
+                "banner": user_banner   # ✅ BANNER INCLUIDO EN METADATA
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -1192,6 +1200,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
                 "username": user_username or user_email.split("@")[0],
                 "full_name": user_full_name or user_username or user_email.split("@")[0],
                 "avatar": user_avatar,
+                "banner": user_banner,   # ✅ BANNER INCLUIDO EN RESPUESTA
                 "email_verified": True,
                 "two_factor_verified": True
             }
@@ -1232,6 +1241,7 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
         user_email = user_profile.get("email", "")
+        user_banner = user_profile.get("banner_url")  # ✅ BANNER OBTENIDO
         
         now = datetime.now(timezone.utc)
         final_token = jwt.encode({
@@ -1242,6 +1252,9 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
             "role": "authenticated",
             "two_factor_verified": True,
             "verification_method": "backup",
+            "user_metadata": {
+                "banner": user_banner
+            },
             "iat": now,
             "exp": now + timedelta(days=7)
         }, settings.jwt_secret, algorithm="HS256")
@@ -1257,7 +1270,8 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
                 "id": user_id,
                 "email": user_email,
                 "username": user_profile.get("username", ""),
-                "full_name": user_profile.get("full_name", "")
+                "full_name": user_profile.get("full_name", ""),
+                "banner": user_banner  # ✅ BANNER INCLUIDO
             }
         }
         

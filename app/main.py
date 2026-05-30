@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="QuickNote API",
     description="API para la aplicacion de notas QuickNote con autenticacion biometrica, OTP, 2FA, Backup en la Nube y Seguridad Avanzada",
-    version="2.4.0",
+    version="2.5.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -55,7 +55,7 @@ origins = [
     "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
     
     # ==========================================
-    # ✅ CORREGIDO: PRODUCCION - FRONTEND EN RENDER
+    # PRODUCCION - FRONTEND EN RENDER
     # ==========================================
     "https://quicknote-web-app.onrender.com",
     
@@ -108,7 +108,6 @@ async def log_requests(request: Request, call_next):
     
     if origin:
         logger.info(f"Origin: {origin}")
-        # Verificar si el origen está permitido
         if origin in origins:
             logger.info(f"✅ Origin permitido por CORS")
         else:
@@ -149,7 +148,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(backup_router, prefix="/api/v1")
 
 logger.info("Rutas incluidas correctamente")
-logger.info("  - /api/v1/notes/* -> CRUD de notas")
+logger.info("  - /api/v1/notes/* -> CRUD de notas (incluye soft delete, restore, empty trash)")
 logger.info("  - /api/v1/passkeys/* -> Gestion de passkeys")
 logger.info("  - /api/v1/auth/* -> Autenticacion (OTP + 2FA + Seguridad)")
 logger.info("  - /api/v1/backup/* -> Backup en la Nube")
@@ -163,13 +162,17 @@ async def root():
     """Endpoint raiz."""
     return {
         "message": "QuickNote API",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "status": "online",
         "docs": "/docs",
         "endpoints": {
             "health": "/health",
             "info": "/info",
             "notes": "/api/v1/notes",
+            "notes_soft_delete": "/api/v1/notes/{id} (DELETE - mueve a papelera)",
+            "notes_restore": "/api/v1/notes/{id}/restore (POST - restaura desde papelera)",
+            "notes_permanent": "/api/v1/notes/{id}/permanent (DELETE - elimina permanentemente)",
+            "notes_empty_trash": "/api/v1/notes/trash/empty (DELETE - vacía papelera)",
             "passkeys": "/api/v1/passkeys",
             "auth": "/api/v1/auth",
             "backup": "/api/v1/backup",
@@ -185,7 +188,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "QuickNote API",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "environment": settings.environment,
         "features": {
             "passkeys": True,
@@ -198,6 +201,9 @@ async def health_check():
             "security_events": True,
             "session_management": True,
             "forgot_password_otp": True,
+            "soft_delete": True,
+            "restore_notes": True,
+            "empty_trash": True,
             "supabase": True
         },
         "cors": {
@@ -211,7 +217,7 @@ async def api_info():
     """Endpoint de informacion de la API."""
     return {
         "name": "QuickNote API",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "description": "API para gestion de notas con autenticacion biometrica, OTP, 2FA, Backup en la Nube y Seguridad Avanzada",
         "environment": settings.environment,
         "cors_origins": len(origins),
@@ -221,7 +227,18 @@ async def api_info():
             "/redoc - Documentacion ReDoc",
             "/health - Health check",
             "/info - Informacion de la API",
-            "/api/v1/notes/* - CRUD de notas",
+            "/api/v1/notes - GET (deleted=false) Notas activas",
+            "/api/v1/notes - GET (deleted=true) Notas en papelera",
+            "/api/v1/notes - POST Crear nota",
+            "/api/v1/notes/{id} - GET Obtener nota",
+            "/api/v1/notes/{id} - PUT Actualizar nota",
+            "/api/v1/notes/{id} - DELETE Soft delete (mover a papelera)",
+            "/api/v1/notes/{id}/restore - POST Restaurar desde papelera",
+            "/api/v1/notes/{id}/permanent - DELETE Eliminar permanentemente",
+            "/api/v1/notes/trash/empty - DELETE Vaciar papelera",
+            "/api/v1/notes/batch/soft-delete - POST Eliminar múltiples (soft)",
+            "/api/v1/notes/batch/permanent-delete - POST Eliminar múltiples permanentemente",
+            "/api/v1/notes/sync - POST Sincronizar notas",
             "/api/v1/passkeys/* - Gestion de passkeys",
             "/api/v1/auth/send-otp - Enviar OTP",
             "/api/v1/auth/verify-otp - Verificar OTP",
@@ -275,7 +292,7 @@ async def startup_event():
     """Evento ejecutado al iniciar la aplicacion."""
     logger.info("=" * 60)
     logger.info("QUICKNOTE API INICIADA CORRECTAMENTE")
-    logger.info(f"Version: 2.4.0")
+    logger.info(f"Version: 2.5.0")
     logger.info(f"Entorno: {settings.environment}")
     logger.info(f"Supabase URL: {settings.supabase_url}")
     logger.info(f"Frontend CORS: {len(origins)} origenes permitidos")
@@ -285,6 +302,9 @@ async def startup_event():
     logger.info("   ✅ OTP por Email")
     logger.info("   ✅ 2FA (TOTP - Google Authenticator)")
     logger.info("   ✅ CRUD de Notas")
+    logger.info("   ✅ Soft Delete (Papelera)")
+    logger.info("   ✅ Restaurar Notas")
+    logger.info("   ✅ Vaciar Papelera")
     logger.info("   ✅ Backup en la Nube")
     logger.info("   ✅ Historial de contrasenas")
     logger.info("   ✅ Expiracion de contrasenas")
@@ -297,12 +317,17 @@ async def startup_event():
     logger.info("   - /health - Health check")
     logger.info("   - /info - Informacion de la API")
     logger.info("   - /docs - Documentacion Swagger")
+    logger.info("   - /api/v1/notes?deleted=false - Notas activas")
+    logger.info("   - /api/v1/notes?deleted=true - Notas en papelera")
+    logger.info("   - /api/v1/notes/{id} - DELETE (soft delete)")
+    logger.info("   - /api/v1/notes/{id}/restore - POST (restaurar)")
+    logger.info("   - /api/v1/notes/{id}/permanent - DELETE (eliminar permanentemente)")
+    logger.info("   - /api/v1/notes/trash/empty - DELETE (vaciar papelera)")
     logger.info("   - /api/v1/auth/change-password - Cambiar contrasena")
     logger.info("   - /api/v1/auth/password-policy - Politica de contrasenas")
     logger.info("   - /api/v1/auth/forgot-password/* - Recuperacion por OTP")
     logger.info("=" * 60)
     
-    # Log adicional de CORS para verificar
     logger.info("📋 ORIGENES CORS PERMITIDOS:")
     for origin in origins:
         logger.info(f"   ✅ {origin}")

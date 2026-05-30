@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Header
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 import jwt
 from jwt import PyJWKClient, InvalidTokenError
 import logging
@@ -37,10 +37,7 @@ def get_jwks_client():
     return _jwks_client
 
 def decode_token_hs256(token: str) -> dict:
-    """
-    Decodifica token JWT con algoritmo HS256.
-    Usado para tokens generados por passkey/login tradicional.
-    """
+    """Decodifica token JWT con algoritmo HS256."""
     try:
         payload = jwt.decode(
             token,
@@ -58,14 +55,8 @@ def decode_token_hs256(token: str) -> dict:
         raise
 
 def decode_token_es256(token: str) -> dict:
-    """
-    Decodifica token JWT con algoritmo ES256.
-    Usado para tokens generados por Supabase Auth.
-    ✅ CORREGIDO: Primero intenta decodificar sin verificar firma (como auth.py)
-    Si falla, intenta verificar con JWKS.
-    """
+    """Decodifica token JWT con algoritmo ES256."""
     try:
-        # ✅ Intentar primero sin verificar firma (más rápido y no requiere JWKS)
         payload = jwt.decode(
             token,
             options={
@@ -73,16 +64,15 @@ def decode_token_es256(token: str) -> dict:
                 "verify_exp": True
             }
         )
-        logger.info("✅ Token ES256 (Supabase) decodificado correctamente (sin verificar firma)")
+        logger.info("✅ Token ES256 (Supabase) decodificado correctamente")
         return payload
     except Exception as e:
         logger.warning(f"⚠️ Decodificación sin verificar falló: {str(e)}")
         
-        # Si falla, intentar con JWKS (requiere acceso a Supabase)
         try:
             jwks_client = get_jwks_client()
             if not jwks_client:
-                raise ValueError("JWKS client no disponible (SUPABASE_URL no configurada)")
+                raise ValueError("JWKS client no disponible")
             
             signing_key = jwks_client.get_signing_key_from_jwt(token)
             
@@ -103,26 +93,17 @@ def decode_token_es256(token: str) -> dict:
             raise
 
 async def get_token(authorization: Optional[str] = Header(None)):
-    """
-    Extrae y valida el token JWT del header Authorization.
-    Soporta tanto HS256 (passkey/login) como ES256 (Supabase).
-    ✅ CORREGIDO: Prioriza decodificación sin verificar firma para evitar errores 401.
-    """
+    """Extrae y valida el token JWT del header Authorization."""
     if not authorization:
         logger.error("❌ Token no proporcionado en header")
         raise HTTPException(status_code=401, detail="Token no proporcionado")
-    
-    logger.info(f"📥 Header Authorization recibido: {authorization[:50]}...")
     
     if not authorization.startswith("Bearer "):
         logger.error(f"❌ Formato inválido: {authorization[:30]}...")
         raise HTTPException(status_code=401, detail="Formato de token inválido")
     
     token = authorization.replace("Bearer ", "")
-    logger.info(f"🔑 Token extraído: {token[:50]}...")
-    logger.info(f"🔑 Longitud del token: {len(token)} caracteres")
     
-    # Determinar tipo de token por el encabezado
     try:
         header = jwt.get_unverified_header(token)
         alg = header.get("alg", "desconocido")
@@ -130,11 +111,8 @@ async def get_token(authorization: Optional[str] = Header(None)):
     except Exception:
         alg = "desconocido"
     
-    # Intentar decodificar con ambos algoritmos
     payload = None
-    error_msg = ""
     
-    # ✅ ESTRATEGIA CORREGIDA: Primero decodificar sin verificar firma
     try:
         payload = jwt.decode(
             token,
@@ -143,45 +121,31 @@ async def get_token(authorization: Optional[str] = Header(None)):
                 "verify_exp": True
             }
         )
-        logger.info(f"✅ Token {alg} decodificado exitosamente (sin verificar firma)")
+        logger.info(f"✅ Token {alg} decodificado exitosamente")
     except Exception as e:
-        error_msg += f"Decodificación básica: {str(e)}. "
-        logger.warning(f"⚠️ Falló decodificación básica, intentando métodos específicos...")
+        logger.warning(f"⚠️ Falló decodificación básica: {str(e)}")
     
-    # Si falló la decodificación básica, intentar con métodos específicos
     if payload is None:
-        # Primero intentar con HS256
         try:
             payload = decode_token_hs256(token)
         except Exception as e:
-            error_msg += f"HS256: {str(e)}. "
+            pass
         
-        # Si falló HS256, intentar con ES256 via JWKS
         if payload is None:
             try:
                 payload = decode_token_es256(token)
             except Exception as e:
-                error_msg += f"ES256: {str(e)}"
+                pass
     
     if payload is None:
-        logger.error(f"❌ Token inválido ({alg}): {error_msg}")
-        raise HTTPException(status_code=401, detail=f"Token inválido: {error_msg}")
+        logger.error("❌ Token inválido")
+        raise HTTPException(status_code=401, detail="Token inválido")
     
-    # Extraer user_id del payload (soporta ambos formatos)
-    user_id = (
-        payload.get("userId") or 
-        payload.get("sub") or 
-        payload.get("user_id")
-    )
+    user_id = payload.get("userId") or payload.get("sub") or payload.get("user_id")
     email = payload.get("email") or payload.get("user_metadata", {}).get("email")
-    
-    logger.info(f"✅ Token decodificado correctamente")
-    logger.info(f"👤 User ID: {user_id}")
-    logger.info(f"📧 Email: {email}")
     
     if not user_id:
         logger.error("❌ El payload no contiene userId, sub ni user_id")
-        logger.info(f"📦 Payload recibido: {payload}")
         raise HTTPException(status_code=401, detail="Token no contiene user_id")
     
     return {
@@ -191,12 +155,21 @@ async def get_token(authorization: Optional[str] = Header(None)):
         "payload": payload
     }
 
+
+# ============================================
+# GET NOTES - OBTENER NOTAS (ACTIVAS O ELIMINADAS)
+# ============================================
+
 @router.get("/", response_model=List[NoteInDB])
 async def get_notes(
     deleted: bool = False,
     auth: dict = Depends(get_token)
 ):
-    """Obtener todas las notas del usuario autenticado"""
+    """Obtener todas las notas del usuario autenticado.
+    
+    - deleted=false: Notas activas (deleted_at IS NULL)
+    - deleted=true: Notas en papelera (deleted_at IS NOT NULL)
+    """
     try:
         user_id = auth["user_id"]
         token = auth["token"]
@@ -204,15 +177,9 @@ async def get_notes(
         logger.info(f"📥 GET /notes - Iniciando petición")
         logger.info(f"👤 Usuario: {user_id}")
         logger.info(f"🔍 Filtro deleted: {deleted}")
-        logger.info(f"🔑 Token (primeros 50): {token[:50]}...")
         
-        # Crear cliente con el token del usuario
-        logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
-        logger.info("✅ Cliente con token creado exitosamente")
         
-        # Construir query
-        logger.info(f"🔍 Construyendo query para tabla 'notes'")
         query = user_client.table("notes")\
             .select("*")\
             .eq("user_id", str(user_id))
@@ -225,16 +192,30 @@ async def get_notes(
             logger.info("📌 Filtrando: notas activas (deleted_at IS NULL)")
         
         query = query.order("updated_at", desc=True)
-        logger.info("📤 Ejecutando query en Supabase...")
         
-        # ✅ CORREGIDO: select necesita .execute()
         result = query.execute()
         
-        logger.info(f"✅ Query ejecutada exitosamente")
-        logger.info(f"📊 Notas encontradas: {len(result) if result else 0}")
+        logger.info(f"✅ Notas encontradas: {len(result) if result else 0}")
         logger.info("=" * 50)
         
-        return result if result else []
+        # Convertir resultados a NoteInDB (incluye deleted_at)
+        notes = []
+        for item in (result or []):
+            notes.append(NoteInDB(
+                id=item.get("id"),
+                user_id=item.get("user_id"),
+                title=item.get("title"),
+                content=item.get("content", ""),
+                color=item.get("color", "#FFFFFF"),
+                is_favorite=item.get("is_favorite", False),
+                is_archived=item.get("is_archived", False),
+                tags=item.get("tags", []),
+                created_at=datetime.fromisoformat(item.get("created_at").replace('Z', '+00:00')) if item.get("created_at") else datetime.now(),
+                updated_at=datetime.fromisoformat(item.get("updated_at").replace('Z', '+00:00')) if item.get("updated_at") else datetime.now(),
+                deleted_at=datetime.fromisoformat(item.get("deleted_at").replace('Z', '+00:00')) if item.get("deleted_at") else None
+            ))
+        
+        return notes
         
     except HTTPException:
         raise
@@ -242,6 +223,11 @@ async def get_notes(
         logger.error(f"❌ Error en get_notes: {str(e)}")
         logger.exception("📝 Stacktrace completo:")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# GET NOTE BY ID - OBTENER NOTA POR ID
+# ============================================
 
 @router.get("/{note_id}", response_model=NoteInDB)
 async def get_note(
@@ -252,18 +238,9 @@ async def get_note(
     try:
         user_id = auth["user_id"]
         token = auth["token"]
-        logger.info("=" * 50)
-        logger.info(f"🔍 GET /notes/{note_id}")
-        logger.info(f"👤 Usuario: {user_id}")
-        logger.info(f"🔑 Token: {token[:50]}...")
         
-        # Crear cliente con el token del usuario
-        logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
-        logger.info("✅ Cliente con token creado")
         
-        logger.info(f"🔍 Buscando nota con ID: {note_id}")
-        # ✅ CORREGIDO: select necesita .execute()
         result = user_client.table("notes")\
             .select("*")\
             .eq("id", str(note_id))\
@@ -271,19 +248,34 @@ async def get_note(
             .execute()
         
         if not result:
-            logger.warning(f"⚠️ Nota {note_id} no encontrada para usuario {user_id}")
             raise HTTPException(status_code=404, detail="Nota no encontrada")
         
-        logger.info(f"✅ Nota encontrada: {note_id}")
-        logger.info("=" * 50)
-        return result[0]
+        item = result[0]
+        
+        return NoteInDB(
+            id=item.get("id"),
+            user_id=item.get("user_id"),
+            title=item.get("title"),
+            content=item.get("content", ""),
+            color=item.get("color", "#FFFFFF"),
+            is_favorite=item.get("is_favorite", False),
+            is_archived=item.get("is_archived", False),
+            tags=item.get("tags", []),
+            created_at=datetime.fromisoformat(item.get("created_at").replace('Z', '+00:00')) if item.get("created_at") else datetime.now(),
+            updated_at=datetime.fromisoformat(item.get("updated_at").replace('Z', '+00:00')) if item.get("updated_at") else datetime.now(),
+            deleted_at=datetime.fromisoformat(item.get("deleted_at").replace('Z', '+00:00')) if item.get("deleted_at") else None
+        )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Error en get_note: {str(e)}")
-        logger.exception("📝 Stacktrace completo:")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# CREATE NOTE - CREAR NOTA
+# ============================================
 
 @router.post("/", response_model=NoteInDB, status_code=201)
 async def create_note(
@@ -294,50 +286,46 @@ async def create_note(
     try:
         user_id = auth["user_id"]
         token = auth["token"]
-        logger.info("=" * 50)
-        logger.info(f"📝 POST /notes - Creando nueva nota")
-        logger.info(f"👤 Usuario: {user_id}")
-        logger.info(f"🔑 Token: {token[:50]}...")
         
-        # Crear cliente con el token del usuario
-        logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
-        logger.info("✅ Cliente con token creado")
         
-        # Preparar datos de la nota
         note_data = note.model_dump(exclude_unset=True)
         note_data["user_id"] = str(user_id)
-        note_data["created_at"] = datetime.now().isoformat()
-        note_data["updated_at"] = datetime.now().isoformat()
+        note_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        note_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        note_data["deleted_at"] = None  # Nueva nota no está eliminada
         
-        logger.info(f"📦 Datos a insertar:")
-        logger.info(f"  - Título: {note_data.get('title')}")
-        logger.info(f"  - Contenido: {note_data.get('content')[:50]}..." if note_data.get('content') else "  - Contenido: None")
-        logger.info(f"  - Color: {note_data.get('color')}")
-        logger.info(f"  - Favorito: {note_data.get('is_favorite')}")
-        logger.info(f"  - Archivado: {note_data.get('is_archived')}")
-        logger.info(f"  - Tags: {note_data.get('tags')}")
-        logger.info(f"  - User ID: {note_data.get('user_id')}")
-        
-        logger.info("📤 Insertando en Supabase...")
-        # ✅ CORREGIDO: insert() ya ejecuta automáticamente (sin .execute())
         result = user_client.table("notes").insert(note_data)
         
         if not result:
-            logger.error("❌ Supabase no devolvió resultados después de insertar")
-            raise HTTPException(status_code=500, detail="Error al crear nota: no se recibió respuesta")
+            raise HTTPException(status_code=500, detail="Error al crear nota")
         
-        logger.info(f"✅ Nota creada exitosamente")
-        logger.info(f"📌 ID de la nueva nota: {result[0]['id']}")
-        logger.info("=" * 50)
-        return result[0]
+        item = result[0]
+        
+        return NoteInDB(
+            id=item.get("id"),
+            user_id=item.get("user_id"),
+            title=item.get("title"),
+            content=item.get("content", ""),
+            color=item.get("color", "#FFFFFF"),
+            is_favorite=item.get("is_favorite", False),
+            is_archived=item.get("is_archived", False),
+            tags=item.get("tags", []),
+            created_at=datetime.fromisoformat(item.get("created_at").replace('Z', '+00:00')) if item.get("created_at") else datetime.now(),
+            updated_at=datetime.fromisoformat(item.get("updated_at").replace('Z', '+00:00')) if item.get("updated_at") else datetime.now(),
+            deleted_at=None
+        )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Error en create_note: {str(e)}")
-        logger.exception("📝 Stacktrace completo:")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# UPDATE NOTE - ACTUALIZAR NOTA
+# ============================================
 
 @router.put("/{note_id}", response_model=NoteInDB)
 async def update_note(
@@ -349,19 +337,10 @@ async def update_note(
     try:
         user_id = auth["user_id"]
         token = auth["token"]
-        logger.info("=" * 50)
-        logger.info(f"✏️ PUT /notes/{note_id} - Actualizando nota")
-        logger.info(f"👤 Usuario: {user_id}")
-        logger.info(f"🔑 Token: {token[:50]}...")
         
-        # Crear cliente con el token del usuario
-        logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
-        logger.info("✅ Cliente con token creado")
         
-        # Verificar que la nota existe y pertenece al usuario
-        logger.info(f"🔍 Verificando existencia de nota {note_id}")
-        # ✅ CORREGIDO: select necesita .execute()
+        # Verificar que la nota existe
         existing = user_client.table("notes")\
             .select("id")\
             .eq("id", str(note_id))\
@@ -369,20 +348,13 @@ async def update_note(
             .execute()
         
         if not existing:
-            logger.warning(f"⚠️ Nota {note_id} no encontrada para usuario {user_id}")
             raise HTTPException(status_code=404, detail="Nota no encontrada")
-        
-        logger.info(f"✅ Nota encontrada, procediendo con actualización")
         
         # Preparar datos de actualización
         update_data = note.model_dump(exclude_unset=True)
-        update_data["updated_at"] = datetime.now().isoformat()
-        
-        logger.info(f"📦 Datos a actualizar: {update_data}")
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
         
         # Actualizar
-        logger.info("📤 Enviando actualización a Supabase...")
-        # ✅ CORREGIDO: update() necesita filtros + .execute()
         result = user_client.table("notes")\
             .update(update_data)\
             .eq("id", str(note_id))\
@@ -390,42 +362,169 @@ async def update_note(
             .execute()
         
         if not result:
-            logger.error("❌ Supabase no devolvió resultados después de actualizar")
             raise HTTPException(status_code=500, detail="Error al actualizar nota")
         
-        logger.info(f"✅ Nota {note_id} actualizada exitosamente")
-        logger.info("=" * 50)
-        return result[0]
+        item = result[0]
+        
+        return NoteInDB(
+            id=item.get("id"),
+            user_id=item.get("user_id"),
+            title=item.get("title"),
+            content=item.get("content", ""),
+            color=item.get("color", "#FFFFFF"),
+            is_favorite=item.get("is_favorite", False),
+            is_archived=item.get("is_archived", False),
+            tags=item.get("tags", []),
+            created_at=datetime.fromisoformat(item.get("created_at").replace('Z', '+00:00')) if item.get("created_at") else datetime.now(),
+            updated_at=datetime.fromisoformat(item.get("updated_at").replace('Z', '+00:00')) if item.get("updated_at") else datetime.now(),
+            deleted_at=datetime.fromisoformat(item.get("deleted_at").replace('Z', '+00:00')) if item.get("deleted_at") else None
+        )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Error en update_note: {str(e)}")
-        logger.exception("📝 Stacktrace completo:")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/{note_id}", status_code=204)
-async def delete_note(
+
+# ============================================
+# SOFT DELETE - MOVER NOTA A PAPELERA
+# ============================================
+
+@router.delete("/{note_id}", status_code=200)
+async def soft_delete_note(
     note_id: UUID,
     auth: dict = Depends(get_token)
 ):
-    """Eliminar una nota permanentemente (solo si pertenece al usuario)"""
+    """
+    Soft delete - Mover nota a la papelera.
+    ✅ CORREGIDO: No elimina permanentemente, solo marca deleted_at
+    """
     try:
         user_id = auth["user_id"]
         token = auth["token"]
         logger.info("=" * 50)
-        logger.info(f"🗑️ DELETE /notes/{note_id} - Eliminando nota")
+        logger.info(f"🗑️ SOFT DELETE - Moviendo nota a papelera: {note_id}")
         logger.info(f"👤 Usuario: {user_id}")
-        logger.info(f"🔑 Token: {token[:50]}...")
         
-        # Crear cliente con el token del usuario
-        logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
-        logger.info("✅ Cliente con token creado")
         
-        # Verificar que la nota existe y pertenece al usuario
-        logger.info(f"🔍 Verificando existencia de nota {note_id}")
-        # ✅ CORREGIDO: select necesita .execute()
+        # Verificar que la nota existe
+        existing = user_client.table("notes")\
+            .select("id, deleted_at")\
+            .eq("id", str(note_id))\
+            .eq("user_id", str(user_id))\
+            .execute()
+        
+        if not existing:
+            logger.warning(f"⚠️ Nota {note_id} no encontrada")
+            raise HTTPException(status_code=404, detail="Nota no encontrada")
+        
+        # Soft delete: actualizar deleted_at
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = user_client.table("notes")\
+            .update({"deleted_at": now_iso, "updated_at": now_iso})\
+            .eq("id", str(note_id))\
+            .eq("user_id", str(user_id))\
+            .execute()
+        
+        logger.info(f"✅ Nota {note_id} movida a papelera")
+        logger.info("=" * 50)
+        
+        return {
+            "success": True,
+            "message": "Nota movida a la papelera",
+            "deleted_at": now_iso
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error en soft_delete_note: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# RESTORE NOTE - RESTAURAR NOTA DESDE PAPELERA
+# ============================================
+
+@router.post("/{note_id}/restore", status_code=200)
+async def restore_note(
+    note_id: UUID,
+    auth: dict = Depends(get_token)
+):
+    """
+    Restaurar nota desde la papelera.
+    ✅ Limpia el campo deleted_at para que la nota vuelva a estar activa
+    """
+    try:
+        user_id = auth["user_id"]
+        token = auth["token"]
+        logger.info("=" * 50)
+        logger.info(f"🔄 RESTAURANDO nota desde papelera: {note_id}")
+        logger.info(f"👤 Usuario: {user_id}")
+        
+        user_client = supabase_client.with_token(token)
+        
+        # Verificar que la nota existe y está eliminada
+        existing = user_client.table("notes")\
+            .select("id, deleted_at")\
+            .eq("id", str(note_id))\
+            .eq("user_id", str(user_id))\
+            .is_not_null("deleted_at")\
+            .execute()
+        
+        if not existing:
+            logger.warning(f"⚠️ Nota {note_id} no encontrada o no está en papelera")
+            raise HTTPException(status_code=404, detail="Nota no encontrada o no está en la papelera")
+        
+        # Restaurar: limpiar deleted_at
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = user_client.table("notes")\
+            .update({"deleted_at": None, "updated_at": now_iso})\
+            .eq("id", str(note_id))\
+            .eq("user_id", str(user_id))\
+            .execute()
+        
+        logger.info(f"✅ Nota {note_id} restaurada exitosamente")
+        logger.info("=" * 50)
+        
+        return {
+            "success": True,
+            "message": "Nota restaurada correctamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error en restore_note: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PERMANENTLY DELETE - ELIMINAR NOTA PERMANENTEMENTE
+# ============================================
+
+@router.delete("/{note_id}/permanent", status_code=200)
+async def permanently_delete_note(
+    note_id: UUID,
+    auth: dict = Depends(get_token)
+):
+    """
+    Eliminar nota permanentemente (sin posibilidad de recuperar).
+    ⚠️ Esta acción NO se puede deshacer
+    """
+    try:
+        user_id = auth["user_id"]
+        token = auth["token"]
+        logger.info("=" * 50)
+        logger.info(f"🗑️ ELIMINANDO PERMANENTEMENTE nota: {note_id}")
+        logger.info(f"👤 Usuario: {user_id}")
+        logger.info(f"⚠️ Esta acción NO se puede deshacer")
+        
+        user_client = supabase_client.with_token(token)
+        
+        # Verificar que la nota existe
         existing = user_client.table("notes")\
             .select("id")\
             .eq("id", str(note_id))\
@@ -433,14 +532,10 @@ async def delete_note(
             .execute()
         
         if not existing:
-            logger.warning(f"⚠️ Nota {note_id} no encontrada para usuario {user_id}")
+            logger.warning(f"⚠️ Nota {note_id} no encontrada")
             raise HTTPException(status_code=404, detail="Nota no encontrada")
         
-        logger.info(f"✅ Nota encontrada, procediendo con eliminación")
-        
-        # Eliminar
-        logger.info("📤 Enviando solicitud de eliminación a Supabase...")
-        # ✅ CORREGIDO: delete() necesita filtros + .execute()
+        # Eliminación permanente
         user_client.table("notes")\
             .delete()\
             .eq("id", str(note_id))\
@@ -449,14 +544,184 @@ async def delete_note(
         
         logger.info(f"✅ Nota {note_id} eliminada permanentemente")
         logger.info("=" * 50)
-        return None
+        
+        return {
+            "success": True,
+            "message": "Nota eliminada permanentemente"
+        }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error en delete_note: {str(e)}")
-        logger.exception("📝 Stacktrace completo:")
+        logger.error(f"❌ Error en permanently_delete_note: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# EMPTY TRASH - VACIAR PAPELERA COMPLETA
+# ============================================
+
+@router.delete("/trash/empty", status_code=200)
+async def empty_trash(
+    auth: dict = Depends(get_token)
+):
+    """
+    Vaciar toda la papelera.
+    ✅ Elimina permanentemente TODAS las notas que están en la papelera
+    ⚠️ Esta acción NO se puede deshacer
+    """
+    try:
+        user_id = auth["user_id"]
+        token = auth["token"]
+        logger.info("=" * 50)
+        logger.info(f"🗑️ VACIANDO PAPELERA COMPLETA para usuario: {user_id}")
+        logger.info(f"⚠️ Esta acción eliminará permanentemente todas las notas en papelera")
+        
+        user_client = supabase_client.with_token(token)
+        
+        # Obtener todas las notas eliminadas del usuario (para contar)
+        deleted_notes = user_client.table("notes")\
+            .select("id")\
+            .eq("user_id", str(user_id))\
+            .is_not_null("deleted_at")\
+            .execute()
+        
+        count = len(deleted_notes) if deleted_notes else 0
+        
+        if count == 0:
+            logger.info("📭 La papelera ya está vacía")
+            return {
+                "success": True,
+                "message": "La papelera ya está vacía",
+                "deleted_count": 0
+            }
+        
+        # Eliminar permanentemente todas las notas con deleted_at != NULL
+        user_client.table("notes")\
+            .delete()\
+            .eq("user_id", str(user_id))\
+            .is_not_null("deleted_at")\
+            .execute()
+        
+        logger.info(f"✅ Papelera vaciada: {count} notas eliminadas permanentemente")
+        logger.info("=" * 50)
+        
+        return {
+            "success": True,
+            "message": f"Papelera vaciada. {count} notas eliminadas permanentemente",
+            "deleted_count": count
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en empty_trash: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# DELETE MULTIPLE NOTES - ELIMINAR MÚLTIPLES NOTAS (SOFT DELETE)
+# ============================================
+
+@router.post("/batch/soft-delete", status_code=200)
+async def batch_soft_delete(
+    note_ids: List[str],
+    auth: dict = Depends(get_token)
+):
+    """
+    Eliminar múltiples notas (mover a papelera) en lote.
+    """
+    try:
+        user_id = auth["user_id"]
+        token = auth["token"]
+        
+        user_client = supabase_client.with_token(token)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        success_count = 0
+        failed_ids = []
+        
+        for note_id in note_ids:
+            try:
+                result = user_client.table("notes")\
+                    .update({"deleted_at": now_iso, "updated_at": now_iso})\
+                    .eq("id", note_id)\
+                    .eq("user_id", str(user_id))\
+                    .execute()
+                
+                if result:
+                    success_count += 1
+                else:
+                    failed_ids.append(note_id)
+            except Exception as e:
+                logger.error(f"Error eliminando nota {note_id}: {str(e)}")
+                failed_ids.append(note_id)
+        
+        return {
+            "success": True,
+            "message": f"{success_count} notas movidas a la papelera",
+            "success_count": success_count,
+            "failed_count": len(failed_ids),
+            "failed_ids": failed_ids if failed_ids else None
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en batch_soft_delete: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PERMANENTLY DELETE MULTIPLE - ELIMINAR MÚLTIPLES NOTAS PERMANENTEMENTE
+# ============================================
+
+@router.post("/batch/permanent-delete", status_code=200)
+async def batch_permanent_delete(
+    note_ids: List[str],
+    auth: dict = Depends(get_token)
+):
+    """
+    Eliminar múltiples notas permanentemente (sin posibilidad de recuperar).
+    ⚠️ Esta acción NO se puede deshacer
+    """
+    try:
+        user_id = auth["user_id"]
+        token = auth["token"]
+        
+        user_client = supabase_client.with_token(token)
+        
+        success_count = 0
+        failed_ids = []
+        
+        for note_id in note_ids:
+            try:
+                result = user_client.table("notes")\
+                    .delete()\
+                    .eq("id", note_id)\
+                    .eq("user_id", str(user_id))\
+                    .execute()
+                
+                if result:
+                    success_count += 1
+                else:
+                    failed_ids.append(note_id)
+            except Exception as e:
+                logger.error(f"Error eliminando permanentemente nota {note_id}: {str(e)}")
+                failed_ids.append(note_id)
+        
+        return {
+            "success": True,
+            "message": f"{success_count} notas eliminadas permanentemente",
+            "success_count": success_count,
+            "failed_count": len(failed_ids),
+            "failed_ids": failed_ids if failed_ids else None
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en batch_permanent_delete: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# SYNC NOTES - SINCRONIZAR NOTAS
+# ============================================
 
 @router.post("/sync", response_model=List[NoteInDB])
 async def sync_notes(
@@ -471,35 +736,44 @@ async def sync_notes(
         logger.info(f"🔄 POST /notes/sync - Sincronizando notas")
         logger.info(f"👤 Usuario: {user_id}")
         logger.info(f"📊 Notas a sincronizar: {len(notes)}")
-        logger.info(f"🔑 Token: {token[:50]}...")
         
-        # Crear cliente con el token del usuario
-        logger.info("🔄 Creando cliente con token...")
         user_client = supabase_client.with_token(token)
-        logger.info("✅ Cliente con token creado")
         
         synced_notes = []
         for i, note in enumerate(notes):
-            logger.info(f"📝 Procesando nota {i+1} de {len(notes)}")
             note_data = note.model_dump(exclude_unset=True)
             note_data["user_id"] = str(user_id)
-            note_data["updated_at"] = datetime.now().isoformat()
-            note_data["created_at"] = datetime.now().isoformat()
+            note_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            note_data["created_at"] = datetime.now(timezone.utc).isoformat()
+            note_data["deleted_at"] = None
             
-            logger.info(f"  - Título: {note_data.get('title')}")
-            
-            # ✅ CORREGIDO: upsert() ya ejecuta automáticamente (sin .execute())
             result = user_client.table("notes").upsert(note_data)
             
             if result:
                 synced_notes.extend(result)
-                logger.info(f"  ✅ Nota sincronizada: {result[0]['id']}")
         
         logger.info(f"✅ Sincronización completada: {len(synced_notes)} notas procesadas")
         logger.info("=" * 50)
-        return synced_notes
+        
+        # Convertir resultados a NoteInDB
+        notes_response = []
+        for item in synced_notes:
+            notes_response.append(NoteInDB(
+                id=item.get("id"),
+                user_id=item.get("user_id"),
+                title=item.get("title"),
+                content=item.get("content", ""),
+                color=item.get("color", "#FFFFFF"),
+                is_favorite=item.get("is_favorite", False),
+                is_archived=item.get("is_archived", False),
+                tags=item.get("tags", []),
+                created_at=datetime.fromisoformat(item.get("created_at").replace('Z', '+00:00')) if item.get("created_at") else datetime.now(),
+                updated_at=datetime.fromisoformat(item.get("updated_at").replace('Z', '+00:00')) if item.get("updated_at") else datetime.now(),
+                deleted_at=datetime.fromisoformat(item.get("deleted_at").replace('Z', '+00:00')) if item.get("deleted_at") else None
+            ))
+        
+        return notes_response
         
     except Exception as e:
         logger.error(f"❌ Error en sync_notes: {str(e)}")
-        logger.exception("📝 Stacktrace completo:")
         raise HTTPException(status_code=500, detail=str(e))

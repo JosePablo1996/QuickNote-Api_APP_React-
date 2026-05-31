@@ -15,7 +15,8 @@ from app.config import settings
 # Configurar logger
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/notes", tags=["notes"])
+# ✅ CORREGIDO: redirect_slashes=False evita redirecciones 307
+router = APIRouter(prefix="/notes", tags=["notes"], redirect_slashes=False)
 
 # Constantes
 JWT_SECRET = settings.jwt_secret if hasattr(settings, 'jwt_secret') else "quicknote-super-secret-jwt-key-change-in-production"

@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings
-from app.routes import notes_router, passkeys_router, auth_router, backup_router
+from app.routes import notes_router, passkeys_router, auth_router, backup_router, upload_router
 
 # Configurar logging
 logging.basicConfig(
@@ -30,16 +30,12 @@ app = FastAPI(
 )
 
 # ============================================
-# CONFIGURACION DE CORS (CORREGIDA)
+# CONFIGURACION DE CORS
 # ============================================
 
 logger.info("Configurando CORS...")
 
-# ✅ LISTA COMPLETA Y CORREGIDA DE ORIGENES PERMITIDOS
 origins = [
-    # ==========================================
-    # DESARROLLO LOCAL
-    # ==========================================
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
@@ -47,21 +43,9 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://127.0.0.1:3000",
-    
-    # ==========================================
-    # PRODUCCION - FRONTEND EN VERCEL
-    # ==========================================
     "https://quicknote-web-app.vercel.app",
     "https://quicknote-web-app-git-main-josepablo1996s-projects.vercel.app",
-    
-    # ==========================================
-    # PRODUCCION - FRONTEND EN RENDER
-    # ==========================================
     "https://quicknote-web-app.onrender.com",
-    
-    # ==========================================
-    # PRODUCCION - BACKEND EN RENDER (para auto-solicitudes)
-    # ==========================================
     "https://quicknote-api-app-react.onrender.com",
 ]
 
@@ -146,12 +130,14 @@ app.include_router(notes_router, prefix="/api/v1")
 app.include_router(passkeys_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(backup_router, prefix="/api/v1")
+app.include_router(upload_router, prefix="/api/v1")
 
 logger.info("Rutas incluidas correctamente")
-logger.info("  - /api/v1/notes/* -> CRUD de notas (incluye soft delete, restore, empty trash)")
+logger.info("  - /api/v1/notes/* -> CRUD de notas")
 logger.info("  - /api/v1/passkeys/* -> Gestion de passkeys")
-logger.info("  - /api/v1/auth/* -> Autenticacion (OTP + 2FA + Seguridad)")
+logger.info("  - /api/v1/auth/* -> Autenticacion")
 logger.info("  - /api/v1/backup/* -> Backup en la Nube")
+logger.info("  - /api/v1/upload/* -> Subida de imagenes")
 
 # ============================================
 # ENDPOINTS BASICOS
@@ -169,16 +155,11 @@ async def root():
             "health": "/health",
             "info": "/info",
             "notes": "/api/v1/notes",
-            "notes_soft_delete": "/api/v1/notes/{id} (DELETE - mueve a papelera)",
-            "notes_restore": "/api/v1/notes/{id}/restore (POST - restaura desde papelera)",
-            "notes_permanent": "/api/v1/notes/{id}/permanent (DELETE - elimina permanentemente)",
-            "notes_empty_trash": "/api/v1/notes/trash/empty (DELETE - vacía papelera)",
             "passkeys": "/api/v1/passkeys",
             "auth": "/api/v1/auth",
             "backup": "/api/v1/backup",
+            "upload": "/api/v1/upload",
             "2fa": "/api/v1/auth/2fa",
-            "security": "/api/v1/auth/change-password",
-            "forgot_password": "/api/v1/auth/forgot-password/send-otp"
         }
     }
 
@@ -196,19 +177,8 @@ async def health_check():
             "two_factor": True,
             "notes_crud": True,
             "cloud_backup": True,
-            "password_history": True,
-            "password_expiry": True,
-            "security_events": True,
-            "session_management": True,
-            "forgot_password_otp": True,
-            "soft_delete": True,
-            "restore_notes": True,
-            "empty_trash": True,
+            "upload_images": True,
             "supabase": True
-        },
-        "cors": {
-            "allowed_origins": origins,
-            "credentials_allowed": True
         }
     }
 
@@ -218,68 +188,24 @@ async def api_info():
     return {
         "name": "QuickNote API",
         "version": "2.5.0",
-        "description": "API para gestion de notas con autenticacion biometrica, OTP, 2FA, Backup en la Nube y Seguridad Avanzada",
         "environment": settings.environment,
-        "cors_origins": len(origins),
-        "cors_allowed_origins": origins,
         "endpoints_disponibles": [
-            "/docs - Documentacion Swagger",
-            "/redoc - Documentacion ReDoc",
-            "/health - Health check",
-            "/info - Informacion de la API",
-            "/api/v1/notes - GET (deleted=false) Notas activas",
-            "/api/v1/notes - GET (deleted=true) Notas en papelera",
-            "/api/v1/notes - POST Crear nota",
-            "/api/v1/notes/{id} - GET Obtener nota",
-            "/api/v1/notes/{id} - PUT Actualizar nota",
-            "/api/v1/notes/{id} - DELETE Soft delete (mover a papelera)",
-            "/api/v1/notes/{id}/restore - POST Restaurar desde papelera",
-            "/api/v1/notes/{id}/permanent - DELETE Eliminar permanentemente",
-            "/api/v1/notes/trash/empty - DELETE Vaciar papelera",
-            "/api/v1/notes/batch/soft-delete - POST Eliminar múltiples (soft)",
-            "/api/v1/notes/batch/permanent-delete - POST Eliminar múltiples permanentemente",
-            "/api/v1/notes/sync - POST Sincronizar notas",
-            "/api/v1/passkeys/* - Gestion de passkeys",
-            "/api/v1/auth/send-otp - Enviar OTP",
-            "/api/v1/auth/verify-otp - Verificar OTP",
-            "/api/v1/auth/change-password - Cambiar contrasena",
-            "/api/v1/auth/check-password-expiry - Verificar expiracion",
-            "/api/v1/auth/logout-all-sessions - Cerrar todas las sesiones",
-            "/api/v1/auth/password-policy - Politica de contrasenas",
-            "/api/v1/auth/forgot-password/send-otp - Enviar OTP para reset",
-            "/api/v1/auth/forgot-password/verify-otp - Verificar OTP para reset",
-            "/api/v1/auth/forgot-password/reset - Resetear contrasena con OTP",
-            "/api/v1/auth/2fa/enable - Activar 2FA",
-            "/api/v1/auth/2fa/verify-enable - Verificar y activar 2FA",
-            "/api/v1/auth/2fa/status - Estado 2FA",
-            "/api/v1/auth/2fa/disable - Desactivar 2FA",
-            "/api/v1/auth/2fa/verify-login - Verificar 2FA en login",
-            "/api/v1/backup/cloud - Gestion de backups en la nube"
+            "/docs",
+            "/health",
+            "/info",
+            "/api/v1/notes",
+            "/api/v1/passkeys",
+            "/api/v1/auth",
+            "/api/v1/backup",
+            "/api/v1/upload/avatar - POST",
+            "/api/v1/upload/banner - POST",
+            "/api/v1/upload/avatar - DELETE",
+            "/api/v1/upload/banner - DELETE"
         ],
-        "autenticacion": {
-            "metodos": [
-                "Email/Password (Supabase)",
-                "Passkeys (WebAuthn)",
-                "OTP por Email",
-                "TOTP 2FA (Google Authenticator)"
-            ],
-            "jwt_algoritmos": ["HS256", "ES256"],
-            "seguridad_avanzada": [
-                "Historial de contrasenas",
-                "Expiracion de contrasenas",
-                "Prevencion de reutilizacion",
-                "Cierre de sesiones remotas",
-                "Eventos de seguridad",
-                "Rate limiting",
-                "Recuperacion por OTP"
-            ]
-        },
-        "backup": {
-            "metodos": [
-                "Local backup (JSON download)",
-                "Cloud backup (Supabase storage)"
-            ],
-            "seguridad": "Row Level Security - Solo el usuario puede acceder a sus backups"
+        "upload": {
+            "formatos_permitidos": ["JPEG", "PNG", "WEBP"],
+            "tamano_maximo_avatar": "5MB",
+            "tamano_maximo_banner": "10MB"
         }
     }
 
@@ -294,8 +220,6 @@ async def startup_event():
     logger.info("QUICKNOTE API INICIADA CORRECTAMENTE")
     logger.info(f"Version: 2.5.0")
     logger.info(f"Entorno: {settings.environment}")
-    logger.info(f"Supabase URL: {settings.supabase_url}")
-    logger.info(f"Frontend CORS: {len(origins)} origenes permitidos")
     logger.info("")
     logger.info("Funcionalidades activas:")
     logger.info("   ✅ Passkeys (WebAuthn)")
@@ -306,31 +230,13 @@ async def startup_event():
     logger.info("   ✅ Restaurar Notas")
     logger.info("   ✅ Vaciar Papelera")
     logger.info("   ✅ Backup en la Nube")
-    logger.info("   ✅ Historial de contrasenas")
-    logger.info("   ✅ Expiracion de contrasenas")
-    logger.info("   ✅ Prevencion de reutilizacion")
-    logger.info("   ✅ Cierre de sesiones remotas")
-    logger.info("   ✅ Eventos de seguridad")
-    logger.info("   ✅ Recuperacion de contrasena por OTP")
+    logger.info("   ✅ Subida de imagenes (Avatar/Banner)")
     logger.info("")
     logger.info("Endpoints principales:")
-    logger.info("   - /health - Health check")
-    logger.info("   - /info - Informacion de la API")
-    logger.info("   - /docs - Documentacion Swagger")
-    logger.info("   - /api/v1/notes?deleted=false - Notas activas")
-    logger.info("   - /api/v1/notes?deleted=true - Notas en papelera")
-    logger.info("   - /api/v1/notes/{id} - DELETE (soft delete)")
-    logger.info("   - /api/v1/notes/{id}/restore - POST (restaurar)")
-    logger.info("   - /api/v1/notes/{id}/permanent - DELETE (eliminar permanentemente)")
-    logger.info("   - /api/v1/notes/trash/empty - DELETE (vaciar papelera)")
-    logger.info("   - /api/v1/auth/change-password - Cambiar contrasena")
-    logger.info("   - /api/v1/auth/password-policy - Politica de contrasenas")
-    logger.info("   - /api/v1/auth/forgot-password/* - Recuperacion por OTP")
+    logger.info("   - /docs - Documentacion")
+    logger.info("   - /api/v1/upload/avatar - Subir avatar")
+    logger.info("   - /api/v1/upload/banner - Subir banner")
     logger.info("=" * 60)
-    
-    logger.info("📋 ORIGENES CORS PERMITIDOS:")
-    for origin in origins:
-        logger.info(f"   ✅ {origin}")
 
 @app.on_event("shutdown")
 async def shutdown_event():

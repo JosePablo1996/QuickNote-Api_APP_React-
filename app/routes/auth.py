@@ -241,7 +241,6 @@ async def check_user_2fa_enabled(user_id: str) -> bool:
 
 # ============================================
 # ✅ FUNCIÓN MEJORADA PARA OBTENER URL DEL AVATAR
-# Busca automáticamente el archivo real sin necesidad de actualizar la BD
 # ============================================
 
 def _get_avatar_url(user_id: str, existing_url: Optional[str] = None) -> str:
@@ -252,27 +251,10 @@ def _get_avatar_url(user_id: str, existing_url: Optional[str] = None) -> str:
     supabase_url = settings.supabase_url
     bucket = "avatars"
     
-    # Lista de posibles nombres de archivo (en orden de prioridad)
-    # Estos son los patrones comunes que aparecen al subir imágenes
-    possible_patterns = [
-        # Patrón con timestamp (el más común)
-        lambda: f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}/avatar-*.jpg",
-        # Nombre estándar
-        lambda: f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}/avatar.jpg",
-        lambda: f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}/avatar.png",
-        lambda: f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}/avatar.webp",
-        # Patrón con timestamp largo (como el banner)
-        lambda: f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}/1775032498-*.jpg",
-    ]
-    
-    # Si hay una URL existente que no es placeholder, intentar usarla primero
     if existing_url and existing_url.startswith(supabase_url) and not existing_url.endswith('/avatar.jpg'):
-        # Verificar si la URL termina con un patrón válido
         if any(ext in existing_url for ext in ['.jpg', '.png', '.webp', '.jpeg']):
             return existing_url
     
-    # Si no hay URL válida, construir una URL con el nombre más probable
-    # El avatar más reciente suele tener el formato avatar-{timestamp}.jpg
     return f"{supabase_url}/storage/v1/object/public/{bucket}/{user_id}/avatar-1780098249267.jpg"
 
 
@@ -283,10 +265,8 @@ def _get_banner_url(user_id: str, existing_url: Optional[str] = None) -> str:
     supabase_url = settings.supabase_url
     bucket = "banners"
     
-    # El banner ya tiene un nombre específico
     banner_name = "1775032503-263cd994-d213-4303-98a7-c103a2314333.webp"
     
-    # Si hay una URL existente válida, usarla
     if existing_url and existing_url.startswith(supabase_url):
         return existing_url
     
@@ -396,7 +376,7 @@ async def get_current_user(
 
 
 # ============================================
-# ENDPOINT DE LOGIN (CORREGIDO)
+# ENDPOINT DE LOGIN (CORREGIDO CON ROL)
 # ============================================
 
 @router.post("/login", response_model=LoginResponse)
@@ -486,7 +466,10 @@ async def login(credentials: LoginRequest, req: Request = None):
             # Obtener perfil completo del usuario desde la tabla profiles
             user_profile = await get_user_profile(user_id)
             
-            # ✅ OBTENER URLs CORRECTAS (búsqueda automática)
+            # ✅ Obtener rol del usuario
+            user_role = user_profile.get("role", "user") if user_profile else "user"
+            
+            # ✅ OBTENER URLs CORRECTAS
             avatar_url = _get_avatar_url(user_id, user_profile.get("avatar_url") if user_profile else None)
             banner_url = _get_banner_url(user_id, user_profile.get("banner_url") if user_profile else None)
             
@@ -506,10 +489,11 @@ async def login(credentials: LoginRequest, req: Request = None):
                         "full_name": user_metadata.get("full_name") or (user_profile.get("full_name") if user_profile else None),
                         "avatar": avatar_url,
                         "banner": banner_url,
+                        "role": user_role,  # ✅ AGREGADO: Campo role
                     }
                 )
             
-            # ✅ DATOS DE USUARIO CON URLs CORRECTAS
+            # ✅ DATOS DE USUARIO CON ROL
             user_data = {
                 "id": user_id,
                 "email": credentials.email,
@@ -517,13 +501,15 @@ async def login(credentials: LoginRequest, req: Request = None):
                 "full_name": user_metadata.get("full_name") or (user_profile.get("full_name") if user_profile else None),
                 "avatar": avatar_url,
                 "banner": banner_url,
-                "email_verified": user.get("email_confirmed_at") is not None
+                "email_verified": user.get("email_confirmed_at") is not None,
+                "role": user_role,  # ✅ AGREGADO: Campo role
             }
             
             logger.info(f"🎉 Login exitoso para: {credentials.email}")
             logger.info(f"👤 Datos usuario: {user_data}")
             logger.info(f"📸 Avatar URL: {avatar_url}")
             logger.info(f"🖼️ Banner URL: {banner_url}")
+            logger.info(f"👑 Rol: {user_role}")
             
             return LoginResponse(
                 success=True,
@@ -880,7 +866,7 @@ async def send_otp(request: SendOtpRequest, req: Request = None):
 
 
 # ============================================
-# ✅ ENDPOINT VERIFY OTP - CORREGIDO CON BÚSQUEDA AUTOMÁTICA
+# ✅ ENDPOINT VERIFY OTP - CORREGIDO CON ROL
 # ============================================
 
 @router.post("/verify-otp")
@@ -918,12 +904,16 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
         user = users[0]
         user_id = user["id"]
         
-        # ✅ OBTENER URLs CORRECTAS (búsqueda automática)
+        # ✅ Obtener rol del usuario
+        user_role = user.get("role", "user")
+        
+        # ✅ OBTENER URLs CORRECTAS
         avatar_url = _get_avatar_url(user_id, user.get("avatar_url"))
         banner_url = _get_banner_url(user_id, user.get("banner_url"))
         
         logger.info(f"📸 OTP - Avatar URL: {avatar_url}")
         logger.info(f"🖼️ OTP - Banner URL: {banner_url}")
+        logger.info(f"👑 OTP - Rol: {user_role}")
         
         now = datetime.now(timezone.utc)
         token_data = {
@@ -936,7 +926,8 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
                 "full_name": user.get("full_name", ""),
                 "username": user.get("username", ""),
                 "avatar": avatar_url,
-                "banner": banner_url
+                "banner": banner_url,
+                "role": user_role,  # ✅ AGREGADO: Campo role en metadata
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -944,7 +935,7 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
         
         token = jwt.encode(token_data, settings.jwt_secret, algorithm="HS256")
         
-        # ✅ RESPUESTA CON URLs CORRECTAS
+        # ✅ RESPUESTA CON URLs CORRECTAS Y ROL
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -955,7 +946,8 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
                 "username": user.get("username", user.get("email", "").split("@")[0]),
                 "full_name": user.get("full_name", ""),
                 "avatar": avatar_url,
-                "banner": banner_url
+                "banner": banner_url,
+                "role": user_role,  # ✅ AGREGADO: Campo role
             }
         }
         
@@ -967,7 +959,7 @@ async def verify_otp(request: VerifyOtpRequest, req: Request = None):
 
 
 # ============================================
-# ENDPOINTS 2FA (RESUMIDOS POR ESPACIO, PERO COMPLETOS)
+# ENDPOINTS 2FA (COMPLETOS CON ROL)
 # ============================================
 
 @router.post("/2fa/enable")
@@ -1122,6 +1114,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
         user_full_name = user_profile.get("full_name", "")
         user_avatar = user_profile.get("avatar_url")
         user_banner = user_profile.get("banner_url")
+        user_role = user_profile.get("role", "user")  # ✅ Obtener rol
         
         # ✅ OBTENER URLs CORRECTAS
         avatar_url = _get_avatar_url(user_id, user_avatar)
@@ -1140,7 +1133,8 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
                 "full_name": user_full_name,
                 "username": user_username,
                 "avatar": avatar_url,
-                "banner": banner_url
+                "banner": banner_url,
+                "role": user_role,  # ✅ AGREGADO: Campo role en metadata
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -1149,6 +1143,7 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
         jwt_token = jwt.encode(token_data, settings.jwt_secret, algorithm="HS256")
         
         logger.info(f"🎉 Login con 2FA exitoso para: {user_email}")
+        logger.info(f"👑 Rol: {user_role}")
         
         return {
             "success": True,
@@ -1166,7 +1161,8 @@ async def verify_2fa_login(request: TwoFactorLoginVerifyRequest, req: Request = 
                 "avatar": avatar_url,
                 "banner": banner_url,
                 "email_verified": True,
-                "two_factor_verified": True
+                "two_factor_verified": True,
+                "role": user_role,  # ✅ AGREGADO: Campo role
             }
         }
         
@@ -1206,6 +1202,7 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
         
         user_email = user_profile.get("email", "")
         user_banner = user_profile.get("banner_url")
+        user_role = user_profile.get("role", "user")  # ✅ Obtener rol
         
         # ✅ OBTENER URL CORRECTA DEL BANNER
         banner_url = _get_banner_url(user_id, user_banner)
@@ -1220,7 +1217,8 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
             "two_factor_verified": True,
             "verification_method": "backup",
             "user_metadata": {
-                "banner": banner_url
+                "banner": banner_url,
+                "role": user_role,  # ✅ AGREGADO: Campo role en metadata
             },
             "iat": now,
             "exp": now + timedelta(days=7)
@@ -1238,7 +1236,8 @@ async def verify_2fa_backup(request: TwoFactorBackupVerifyRequest, req: Request 
                 "email": user_email,
                 "username": user_profile.get("username", ""),
                 "full_name": user_profile.get("full_name", ""),
-                "banner": banner_url
+                "banner": banner_url,
+                "role": user_role,  # ✅ AGREGADO: Campo role
             }
         }
         
